@@ -640,13 +640,13 @@ uint32 WorldQuestMgr::GetTimerForQuest(uint32 questId)
 
 TeamId WorldQuestMgr::GetQuestTeamId(Quest const* quest)
 {
-    if (quest->GetAllowableRaces() == uint64(-1))
+    if (quest->GetAllowableRaces().RawValue == uint64(-1))
         return TEAM_NEUTRAL;
 
-    if (quest->GetAllowableRaces() & RACE_HUMAN)
+    if (quest->GetAllowableRaces().RawValue & RACE_HUMAN)
         return TEAM_ALLIANCE;
 
-    if (quest->GetAllowableRaces() & RACE_ORC)
+    if (quest->GetAllowableRaces().RawValue & RACE_ORC)
         return TEAM_HORDE;
 
     return TEAM_NEUTRAL;
