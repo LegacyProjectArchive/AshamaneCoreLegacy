@@ -22,6 +22,7 @@
 #include "DatabaseEnv.h"
 #include "QuestObjectiveCriteriaMgr.h"
 #include "Log.h"
+#include "RaceMask.h"
 #include "Containers.h"
 #include "GridNotifiersImpl.h"
 
@@ -642,10 +643,10 @@ TeamId WorldQuestMgr::GetQuestTeamId(Quest const* quest)
     if (quest->GetAllowableRaces() == uint64(-1))
         return TEAM_NEUTRAL;
 
-    if (quest->GetAllowableRaces() & RACEMASK_HUMAN)
+    if (quest->GetAllowableRaces() & RACE_HUMAN)
         return TEAM_ALLIANCE;
 
-    if (quest->GetAllowableRaces() & RACEMASK_ORC)
+    if (quest->GetAllowableRaces() & RACE_ORC)
         return TEAM_HORDE;
 
     return TEAM_NEUTRAL;
