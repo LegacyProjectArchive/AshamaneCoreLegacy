@@ -26,6 +26,7 @@
 #include "CreatureAISelector.h"
 #include "CreatureGroups.h"
 #include "DatabaseEnv.h"
+#include "DB2Stores.h"
 #include "Formulas.h"
 #include "GameEventMgr.h"
 #include "GameTime.h"
@@ -57,7 +58,6 @@
 #include "WorldPacket.h"
 #include <G3D/g3dmath.h>
 #include <sstream>
-#include "DB2Stores.h"
 
 TrainerSpell const* TrainerSpellData::Find(uint32 spell_id) const
 {
