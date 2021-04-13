@@ -146,7 +146,6 @@ enum SkillFieldOffset : uint16
 
 #define PLAYER_EXPLORED_ZONES_SIZE  192
 
-// Note: SPELLMOD_* values is aura types in fact
 enum SpellModType : uint8
 {
     SPELLMOD_FLAT         = 0,                            // SPELL_AURA_ADD_FLAT_MODIFIER
@@ -243,7 +242,7 @@ enum SpecResetType
 // Spell modifier (used for modify other spells)
 struct SpellModifier
 {
-    SpellModifier(Aura* _ownerAura) : op(SPELLMOD_DAMAGE), type(SPELLMOD_FLAT), value(0), mask(), spellId(0), ownerAura(_ownerAura) { }
+    SpellModifier(Aura* _ownerAura) : op(SpellModOp::HealingAndDamage), type(SPELLMOD_FLAT), value(0), mask(), spellId(0), ownerAura(_ownerAura) { }
 
     SpellModOp op;
     SpellModType type;
@@ -1876,7 +1875,8 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool UpdateGatherSkill(uint32 SkillId, uint32 SkillValue, uint32 RedLevel, uint32 Multiplicator = 1);
         bool UpdateFishingSkill();
 
-        float GetHealthBonusFromStamina();
+        float GetHealthBonusFromStamina() const;
+        Stats GetPrimaryStat() const;
 
         bool UpdateStats(Stats stat) override;
         bool UpdateAllStats() override;
@@ -2337,6 +2337,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool IsVisibleGloballyFor(Player const* player) const;
 
         void SendInitialVisiblePackets(Unit* target) const;
+        void OnPhaseChange() override;
         void UpdateObjectVisibility(bool forced = true) override;
         void UpdateVisibilityForPlayer();
         void UpdateVisibilityOf(WorldObject* target);
@@ -2524,7 +2525,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         float GetPersonnalXpRate() { return _PersonnalXpRate; }
         void SetPersonnalXpRate(float PersonnalXpRate);
 
-        void OnCombatExit();
+        void OnCombatExit() override;
 
         /*
          * Garrisons

@@ -336,7 +336,7 @@ NonDefaultConstructible<pAuraEffectHandler> AuraEffectHandler[TOTAL_AURAS]=
     &AuraEffect::HandleUnused,                                    //265 unused (4.3.4)
     &AuraEffect::HandleNULL,                                      //266 SPELL_AURA_SET_VIGNETTE
     &AuraEffect::HandleNoImmediateEffect,                         //267 SPELL_AURA_MOD_IMMUNE_AURA_APPLY_SCHOOL         implemented in Unit::IsImmunedToSpellEffect
-    &AuraEffect::HandleUnused,                                    //268 unused (4.3.4) old SPELL_AURA_MOD_ATTACK_POWER_OF_STAT_PERCENT.
+    &AuraEffect::HandleModArmorPctFromStat,                       //268 SPELL_AURA_MOD_ARMOR_PCT_FROM_STAT              also implemented in Player::UpdateArmor()
     &AuraEffect::HandleNoImmediateEffect,                         //269 SPELL_AURA_MOD_IGNORE_TARGET_RESIST implemented in Unit::CalcAbsorbResist and CalcArmorReducedDamage
     &AuraEffect::HandleNoImmediateEffect,                         //270 SPELL_AURA_MOD_SCHOOL_MASK_DAMAGE_FROM_CASTER    implemented in Unit::SpellDamageBonusTaken and Unit::MeleeDamageBonusTaken
     &AuraEffect::HandleNoImmediateEffect,                         //271 SPELL_AURA_MOD_SPELL_DAMAGE_FROM_CASTER    implemented in Unit::SpellDamageBonusTaken and Unit::MeleeDamageBonusTaken
@@ -552,7 +552,7 @@ NonDefaultConstructible<pAuraEffectHandler> AuraEffectHandler[TOTAL_AURAS]=
     &AuraEffect::HandleNoImmediateEffect,                         //481 SPELL_AURA_CONVERT_CONSUMED_RUNE implemented in Spell::TakeRunePower
     &AuraEffect::HandleProfilCamera,                              //482 SPELL_AURA_PROFIL_CAMERA
     &AuraEffect::HandleNULL,                                      //483 SPELL_AURA_SUPPRESS_TRANSFORMS
-    &AuraEffect::HandleNULL,                                      //484
+    &AuraEffect::HandleNULL,                                      //484 SPELL_AURA_ALLOW_INTERRUPT_SPELL
     &AuraEffect::HandleModMovementForceMagnitude,                 //485 SPELL_AURA_MOD_MOVEMENT_FORCE_MAGNITUDE
     &AuraEffect::HandleNULL,                                      //486
     &AuraEffect::HandleNULL,                                      //487
@@ -739,7 +739,7 @@ void AuraEffect::CalculatePeriodic(Unit* caster, bool resetPeriodicTimer /*= tru
     {
         // Apply periodic time mod
         if (modOwner)
-            modOwner->ApplySpellMod(GetId(), SPELLMOD_ACTIVATION_TIME, m_period);
+            modOwner->ApplySpellMod(GetId(), SpellModOp::Period, m_period);
 
         if (caster)
         {
@@ -903,64 +903,49 @@ void AuraEffect::ApplySpellMod(Unit* target, bool apply)
     // Auras with charges do not mod amount of passive auras
     if (GetBase()->IsUsingCharges())
         return;
+
     // reapply some passive spells after add/remove related spellmods
     // Warning: it is a dead loop if 2 auras each other amount-shouldn't happen
-    switch (GetMiscValue())
+    std::bitset<MAX_SPELL_EFFECTS> recalculateEffectMask;
+    switch (SpellModOp(GetMiscValue()))
     {
-        case SPELLMOD_ALL_EFFECTS:
-        case SPELLMOD_EFFECT1:
-        case SPELLMOD_EFFECT2:
-        case SPELLMOD_EFFECT3:
-        case SPELLMOD_EFFECT4:
-        case SPELLMOD_EFFECT5:
-        {
-            ObjectGuid guid = target->GetGUID();
-            Unit::AuraApplicationMap & auras = target->GetAppliedAuras();
-            for (Unit::AuraApplicationMap::iterator iter = auras.begin(); iter != auras.end(); ++iter)
-            {
-                Aura* aura = iter->second->GetBase();
-                // only passive and permament auras-active auras should have amount set on spellcast and not be affected
-                // if aura is cast by others, it will not be affected
-                if ((aura->IsPassive() || aura->IsPermanent()) && aura->GetCasterGUID() == guid && aura->GetSpellInfo()->IsAffectedBySpellMod(m_spellmod))
-                {
-                    if (GetMiscValue() == SPELLMOD_ALL_EFFECTS)
-                    {
-                        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-                        {
-                            if (AuraEffect* aurEff = aura->GetEffect(i))
-                                aurEff->RecalculateAmount();
-                        }
-                    }
-                    else if (GetMiscValue() == SPELLMOD_EFFECT1)
-                    {
-                       if (AuraEffect* aurEff = aura->GetEffect(0))
-                            aurEff->RecalculateAmount();
-                    }
-                    else if (GetMiscValue() == SPELLMOD_EFFECT2)
-                    {
-                       if (AuraEffect* aurEff = aura->GetEffect(1))
-                            aurEff->RecalculateAmount();
-                    }
-                    else if (GetMiscValue() == SPELLMOD_EFFECT3)
-                    {
-                        if (AuraEffect* aurEff = aura->GetEffect(2))
-                            aurEff->RecalculateAmount();
-                    }
-                    else if (GetMiscValue() == SPELLMOD_EFFECT4)
-                    {
-                        if (AuraEffect* aurEff = aura->GetEffect(3))
-                            aurEff->RecalculateAmount();
-                    }
-                    else if (GetMiscValue() == SPELLMOD_EFFECT5)
-                    {
-                        if (AuraEffect* aurEff = aura->GetEffect(4))
-                            aurEff->RecalculateAmount();
-                    }
-                }
-            }
-        }
+        case SpellModOp::Points:
+            recalculateEffectMask.set();
+            break;
+        case SpellModOp::PointsIndex0:
+            recalculateEffectMask.set(EFFECT_0);
+            break;
+        case SpellModOp::PointsIndex1:
+            recalculateEffectMask.set(EFFECT_1);
+            break;
+        case SpellModOp::PointsIndex2:
+            recalculateEffectMask.set(EFFECT_2);
+            break;
+        case SpellModOp::PointsIndex3:
+            recalculateEffectMask.set(EFFECT_3);
+            break;
+        case SpellModOp::PointsIndex4:
+            recalculateEffectMask.set(EFFECT_4);
+            break;
         default:
             break;
+    }
+
+    if (recalculateEffectMask.any())
+    {
+        ObjectGuid guid = target->GetGUID();
+        Unit::AuraApplicationMap& auras = target->GetAppliedAuras();
+        for (auto iter = auras.begin(); iter != auras.end(); ++iter)
+        {
+             Aura* aura = iter->second->GetBase();
+            // only passive and permament auras-active auras should have amount set on spellcast and not be affected
+            // if aura is cast by others, it will not be affected
+            if ((aura->IsPassive() || aura->IsPermanent()) && aura->GetCasterGUID() == guid && aura->GetSpellInfo()->IsAffectedBySpellMod(m_spellmod))
+                for (size_t i = 0; i < recalculateEffectMask.size(); ++i)
+                    if (recalculateEffectMask[i])
+                        if (AuraEffect* aurEff = aura->GetEffect(i))
+                            aurEff->RecalculateAmount();
+        }
     }
 }
 
@@ -3694,6 +3679,20 @@ void AuraEffect::HandleModStatBonusArmorPercent(AuraApplication const* aurApp, u
         target->HandleStatFlatModifier(UNIT_MOD_ARMOR, BASE_PCT_EXCLUDE_CREATE, float(GetAmount()), apply);
 }
 
+// Increase armor by <AuraEffect.BasePoints> % of your <primary stat>
+void AuraEffect::HandleModArmorPctFromStat(AuraApplication const* aurApp, uint8 mode, bool /*apply*/) const
+{
+    if (!(mode & (AURA_EFFECT_HANDLE_CHANGE_AMOUNT_MASK | AURA_EFFECT_HANDLE_STAT)))
+        return;
+
+    // only players have primary stats
+    Player* player = aurApp->GetTarget()->ToPlayer();
+    if (!player)
+        return;
+
+    player->UpdateArmor();
+}
+
 void AuraEffect::HandleModStatBonusPercent(AuraApplication const* aurApp, uint8 mode, bool apply) const
 {
     if (!(mode & (AURA_EFFECT_HANDLE_CHANGE_AMOUNT_MASK | AURA_EFFECT_HANDLE_STAT)))
@@ -4534,6 +4533,8 @@ void AuraEffect::HandleArenaPreparation(AuraApplication const* aurApp, uint8 mod
             return;
         target->RemoveUnitFlag(UNIT_FLAG_PREPARATION);
     }
+	
+    target->ModifyAuraState(AURA_STATE_ARENA_PREPARATION, apply);
 }
 
 void AuraEffect::HandleNoReagentUseAura(AuraApplication const* aurApp, uint8 mode, bool /*apply*/) const
@@ -5784,7 +5785,7 @@ void AuraEffect::HandlePeriodicDamageAurasTick(Unit* target, Unit* caster) const
             int32 weaponDamage = CalculatePct(caster->CalculateDamage(attackType, false, true), GetAmount());
 
             // Add melee damage bonuses (also check for negative)
-            uint32 damageBonusDone = caster->MeleeDamageBonusDone(target, std::max(weaponDamage, 0), attackType, GetSpellInfo());
+            uint32 damageBonusDone = caster->MeleeDamageBonusDone(target, std::max(weaponDamage, 0), attackType, DOT, GetSpellInfo());
 
             damage = target->MeleeDamageBonusTaken(caster, damageBonusDone, attackType, DOT, GetSpellInfo());
             break;
