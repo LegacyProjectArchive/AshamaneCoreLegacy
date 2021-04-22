@@ -3588,18 +3588,6 @@ void Spell::EffectSanctuary(SpellEffIndex /*effIndex*/)
     }
 
     unitTarget->m_lastSanctuaryTime = GameTime::GetGameTimeMS();
-
-    // Vanish allows to remove all threat and cast regular stealth so other spells can be used
-    if (m_caster->GetTypeId() == TYPEID_PLAYER
-        && m_spellInfo->SpellFamilyName == SPELLFAMILY_ROGUE
-        && (m_spellInfo->SpellFamilyFlags[0] & SPELLFAMILYFLAG0_ROGUE_VANISH))
-    {
-        m_caster->ToPlayer()->RemoveAurasByType(SPELL_AURA_MOD_ROOT);
-        m_caster->ToPlayer()->RemoveAurasByType(SPELL_AURA_MOD_ROOT_2);
-        // Overkill
-        if (m_caster->ToPlayer()->HasSpell(58426))
-           m_caster->CastSpell(m_caster, 58427, true);
-    }
 }
 
 void Spell::EffectAddComboPoints(SpellEffIndex /*effIndex*/)
@@ -6284,7 +6272,7 @@ void Spell::EffectLearnAzeriteEssencePower(SpellEffIndex /*effIndex*/)
     if (!playerTarget)
         return;
 
-    Item* heartOfAzeroth = playerTarget->GetItemByEntry(ITEM_ID_HEART_OF_AZEROTH, ITEM_SEARCH_EVERYWHERE);
+    Item* heartOfAzeroth = playerTarget->GetItemByEntry(ITEM_ID_HEART_OF_AZEROTH, ItemSearchLocation::Everywhere);
     if (!heartOfAzeroth)
         return;
 

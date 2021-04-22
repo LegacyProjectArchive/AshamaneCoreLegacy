@@ -40,6 +40,10 @@ void AddSC_boss_yazma();
 void AddSC_atal_dazar();
 void AddSC_instance_atal_dazar();
 
+void AddSC_boss_azerokk();
+void AddSC_the_motherlode();
+void AddSC_instance_the_motherlode();
+
 void AddZandalarScripts()
 {
     AddSC_zone_nazmir();
@@ -66,4 +70,9 @@ void AddZandalarScripts()
     AddSC_boss_yazma();
     AddSC_atal_dazar();
     AddSC_instance_atal_dazar();
+	
+
+	AddSC_boss_azerokk();
+	AddSC_the_motherlode();
+	AddSC_instance_the_motherlode();
 }

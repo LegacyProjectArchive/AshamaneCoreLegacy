@@ -200,7 +200,8 @@ enum PriestSpells
     SPELL_PRIEST_VOID_TENDRILS_TRIGGER              = 127665,
     SPELL_PRIEST_VOID_TORRENT_PREVENT_REGEN         = 262173,
     SPELL_PRIEST_WEAKENED_SOUL                      = 6788,
-    SPELL_SHADOW_PRIEST_BASE_AURA                   = 137033
+    SPELL_SHADOW_PRIEST_BASE_AURA                   = 137033,
+    SPELL_PRIEST_SPIRIT_OF_REDEMPTION               = 27827,
 };
 
 enum PriestSpellIcons
@@ -785,6 +786,7 @@ class RaidCheck
 {
     public:
         explicit RaidCheck(Unit const* caster) : _caster(caster) { }
+
 
         bool operator()(WorldObject* obj) const
         {
@@ -2659,48 +2661,28 @@ public:
 };
 
 // Spirit of Redemption - 20711
-class spell_pri_spirit_of_redemption : public AuraScript
+// 20711 - Spirit of Redemption
+class spell_priest_spirit_of_redemption : public AuraScript
 {
-    PrepareAuraScript(spell_pri_spirit_of_redemption);
+    PrepareAuraScript(spell_priest_spirit_of_redemption);
 
-    enum eSpells
+    bool Validate(SpellInfo const* /*spellInfo*/) override
     {
-        SpiritOfRedemptionImmunity = 62371,
-        UntransformHero = 25100,
-        SpiritOfRedemptionForm = 27795,
-        SpiritOfRedemptionShapeshift = 27827
-    };
-
-    void CalculateAmount(AuraEffect const* /*p_AuraEffect*/, int32& p_Amount, bool& /*p_CanBeRecalculated*/)
-    {
-        p_Amount = -1;
+        return ValidateSpellInfo({ SPELL_PRIEST_SPIRIT_OF_REDEMPTION });
     }
 
-    void Absorb(AuraEffect* /*p_AuraEffect*/, DamageInfo& p_DmgInfo, uint32& p_AbsorbAmount)
+    void HandleAbsorb(AuraEffect* aurEff, DamageInfo& dmgInfo, uint32& absorbAmount)
     {
-        p_AbsorbAmount = 0; //This is set at 0 unless conditions are met (last line)
-        Unit* l_Caster = GetCaster();
-        if (!l_Caster)
-            return;
+        Unit* target = GetTarget();
+        target->CastSpell(target, SPELL_PRIEST_SPIRIT_OF_REDEMPTION, aurEff);
+        target->SetFullHealth();
 
-        if (p_DmgInfo.GetDamage() < l_Caster->GetHealth())
-            return;
-
-        if (l_Caster->HasAura(eSpells::SpiritOfRedemptionShapeshift))
-            return;
-
-        l_Caster->CastSpell(l_Caster, eSpells::SpiritOfRedemptionShapeshift, true);
-        l_Caster->CastSpell(l_Caster, eSpells::SpiritOfRedemptionForm, true);
-        l_Caster->CastSpell(l_Caster, eSpells::SpiritOfRedemptionImmunity, true);
-        l_Caster->CastSpell(l_Caster, eSpells::UntransformHero, true); ///< Visual
-
-        p_AbsorbAmount = p_DmgInfo.GetDamage();
+        absorbAmount = dmgInfo.GetDamage();
     }
 
     void Register() override
     {
-        DoEffectCalcAmount += AuraEffectCalcAmountFn(spell_pri_spirit_of_redemption::CalculateAmount, EFFECT_0, SPELL_AURA_SCHOOL_ABSORB);
-        OnEffectAbsorb += AuraEffectAbsorbFn(spell_pri_spirit_of_redemption::Absorb, EFFECT_0);
+        OnEffectAbsorb += AuraEffectAbsorbOverkillFn(spell_priest_spirit_of_redemption::HandleAbsorb, EFFECT_0);
     }
 };
 
@@ -3162,12 +3144,12 @@ void AddSC_priest_spell_scripts()
     RegisterAuraScript(spell_pri_vampiric_touch);
     RegisterSpellScript(spell_pri_void_eruption);
     RegisterAuraScript(spell_pri_power_of_the_dark_side);
+	RegisterAuraScript(spell_priest_spirit_of_redemption);
     new spell_pri_void_shift();
     new spell_pri_void_tendrils();
     new spell_pri_voidform();
     new spell_priest_angelic_bulwark();
     new spell_pri_shadowy_apparitions();
-    RegisterAuraScript(spell_pri_spirit_of_redemption);
     RegisterAuraScript(spell_pri_spirit_of_redemption_form);
     RegisterSpellScript(spell_pri_holy_word_chastise);
     RegisterSpellScript(spell_pri_smite);

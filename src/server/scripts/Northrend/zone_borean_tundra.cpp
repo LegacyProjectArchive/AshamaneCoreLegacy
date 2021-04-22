@@ -2308,7 +2308,6 @@ public:
                 charGossipItem = GOSSIP_ITEM_GUARD_MITCHELLS;
                 break;
             default:
-                charGossipItem = "";
                 return false;
         }
 

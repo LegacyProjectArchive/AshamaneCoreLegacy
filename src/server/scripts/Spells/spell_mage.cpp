@@ -174,7 +174,7 @@ enum MageSpells
     SPELL_MAGE_RULE_OF_THREES_BUFF               = 264774,
     SPELL_MAGE_SPLITTING_ICE                     = 56377,
     SPELL_ARCANE_CHARGE                          = 36032,
-
+    SPELL_MAGE_ARCANE_BARRAGE_R3                 = 321526,
 // 9.0.2
     SPELL_MAGE_TOUCH_OF_THE_MAGI_AURA            = 210824,
     SPELL_MAGE_TOUCH_OF_THE_MAGI_EXPLODE         = 210833,
@@ -239,58 +239,39 @@ class spell_mage_chrono_shift : public AuraScript
     }
 };
 
-// Arcane Explosion - 1449
+// 1449 - Arcane Explosion
 class spell_mage_arcane_explosion : public SpellScript
 {
     PrepareSpellScript(spell_mage_arcane_explosion);
 
-    int32 _hit;
-
-    bool Validate(SpellInfo const* /*spellInfo*/) override
+    void PreventEnergize(SpellEffIndex effIndex)
     {
-        return ValidateSpellInfo(
+        PreventHitDefaultEffect(effIndex);
+    }
+
+    void HandleTargetHit(SpellEffIndex /*effIndex*/)
+    {
+        if (_once)
+        {
+            if (SpellEffectInfo const* effInfo = GetEffectInfo(EFFECT_0))
             {
-                SPELL_MAGE_REVERBERATE
-            });
-    }
-
-    bool Load() override
-    {
-        _hit = 0;
-        return true;
-    }
-
-    void CheckTargets(std::list<WorldObject*>& targets)
-    {
-        _hit = targets.size();
-    }
-
-    void Prevent(SpellEffIndex effIndex)
-    {
-        if (_hit == 0)
-            PreventHitEffect(effIndex);
-    }
-
-    void PreventTalent(SpellEffIndex effIndex)
-    {
-        if (Aura* reverberate = GetCaster()->GetAura(SPELL_MAGE_REVERBERATE))
-            if (_hit >= reverberate->GetEffect(EFFECT_1)->GetAmount())
-                if (roll_chance_i(100 - reverberate->GetEffect(EFFECT_0)->GetAmount()))
-                    return;
-
-        PreventHitEffect(effIndex);
+                Unit* caster = GetCaster();
+                int32 value = effInfo->CalcValue(caster);
+                caster->ModifyPower(Powers(effInfo->MiscValue), value);
+            }
+            _once = false;
+        }
     }
 
     void Register() override
     {
-        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_mage_arcane_explosion::CheckTargets, EFFECT_1, TARGET_UNIT_SRC_AREA_ENEMY);
-
-        OnEffectHit += SpellEffectFn(spell_mage_arcane_explosion::Prevent, EFFECT_0, SPELL_EFFECT_ENERGIZE);
-        OnEffectHitTarget += SpellEffectFn(spell_mage_arcane_explosion::Prevent, EFFECT_0, SPELL_EFFECT_ENERGIZE);
-
-        OnEffectHit += SpellEffectFn(spell_mage_arcane_explosion::PreventTalent, EFFECT_2, SPELL_EFFECT_ENERGIZE);
-        OnEffectHitTarget += SpellEffectFn(spell_mage_arcane_explosion::PreventTalent, EFFECT_2, SPELL_EFFECT_ENERGIZE);
+        OnEffectHitTarget += SpellEffectFn(spell_mage_arcane_explosion::PreventEnergize, EFFECT_0, SPELL_EFFECT_ENERGIZE);
+        OnEffectHitTarget += SpellEffectFn(spell_mage_arcane_explosion::PreventEnergize, EFFECT_2, SPELL_EFFECT_ENERGIZE);
+        OnEffectHitTarget += SpellEffectFn(spell_mage_arcane_explosion::HandleTargetHit, EFFECT_1, SPELL_EFFECT_SCHOOL_DAMAGE);
     }
+
+private:
+    bool _once = true;
 };
 
 // Arcane Missiles - 5143
@@ -459,42 +440,37 @@ class spell_mage_arcane_barrage : public SpellScript
 {
     PrepareSpellScript(spell_mage_arcane_barrage);
 
-    uint32 _chainTargetCount = 0;
-
     bool Validate(SpellInfo const* /*spellInfo*/) override
     {
-        return ValidateSpellInfo
-        ({
-            SPELL_MAGE_RESONANCE
-        });
-    }
-
-    void FilterTargets(std::list<WorldObject*>& targets)
-    {
-        if (targets.size() > uint64(GetCaster()->GetPower(POWER_ARCANE_CHARGES)))
-            targets.resize(GetCaster()->GetPower(POWER_ARCANE_CHARGES));
-        _chainTargetCount = targets.size();
+        return ValidateSpellInfo({ SPELL_MAGE_ARCANE_BARRAGE_R3 });
     }
 
     void HandleEffectHitTarget(SpellEffIndex /*effIndex*/)
     {
-        int32 damage = GetHitDamage();
-        if (AuraEffect const* aurEff = GetCaster()->GetAuraEffect(SPELL_MAGE_RESONANCE, EFFECT_0))
-            AddPct(damage, ((1 + _chainTargetCount) * aurEff->GetAmount()));
+        // Consume all arcane charges; for each charge add 30% additional damage
+        Unit* caster = GetCaster();
+        double charges = double(-caster->ConsumeAllPower(POWER_ARCANE_CHARGES));
 
-        SetHitDamage(damage);
-    }
+        double currDamage = double(GetHitDamage());
+        double extraDamage = (charges * 0.3) * currDamage;
+        SetHitDamage(int32(currDamage + extraDamage));
 
-    void RemoveCharges()
-    {
-        GetCaster()->SetPower(POWER_ARCANE_CHARGES, 0);
+        if (Aura const* aura = caster->GetAura(SPELL_MAGE_ARCANE_BARRAGE_R3))
+        {
+            if (AuraEffect const* auraEffect = aura->GetEffect(EFFECT_0))
+            {
+                double pct = charges * (double(auraEffect->GetAmount()) * 0.01);
+                int32 maxMana = caster->GetMaxPower(POWER_MANA);
+
+                int32 extraMana = CalculatePct(double(maxMana), pct);
+                caster->ModifyPower(POWER_MANA, extraMana);
+            }
+        }
     }
 
     void Register() override
     {
-        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_mage_arcane_barrage::FilterTargets, EFFECT_0, TARGET_UNIT_TARGET_ENEMY);
         OnEffectHitTarget += SpellEffectFn(spell_mage_arcane_barrage::HandleEffectHitTarget, EFFECT_0, SPELL_EFFECT_SCHOOL_DAMAGE);
-        AfterCast += SpellCastFn(spell_mage_arcane_barrage::RemoveCharges);
     }
 };
 

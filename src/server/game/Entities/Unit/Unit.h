@@ -977,7 +977,8 @@ class TC_GAME_API Unit : public WorldObject
 
         void SendCombatLogMessage(WorldPackets::CombatLog::CombatLogServerPacket* combatLog) const;
 
-        DiminishingLevels GetDiminishing(DiminishingGroup group);
+        virtual bool IsAffectedByDiminishingReturns() const { return (GetCharmerOrOwnerPlayerOrPlayerItself() != nullptr); }
+        DiminishingLevels GetDiminishing(DiminishingGroup group) const;
         void IncrDiminishing(SpellInfo const* auraSpellInfo);
         bool ApplyDiminishingToDuration(SpellInfo const* auraSpellInfo, int32& duration, Unit* caster, DiminishingLevels previousLevel) const;
         void ApplyDiminishingAura(DiminishingGroup group, bool apply);
@@ -1119,6 +1120,7 @@ class TC_GAME_API Unit : public WorldObject
         inline void SetFullPower(Powers power) { SetPower(power, GetMaxPower(power)); }
         // returns the change in power
         int32 ModifyPower(Powers power, int32 val);
+        int32 ConsumeAllPower(Powers power);
 
         void ApplyModManaCostMultiplier(float manaCostMultiplier, bool apply) { ApplyModUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ManaCostMultiplier),  manaCostMultiplier, apply); }
         void ApplyModManaCostModifier(SpellSchools school, int32 mod, bool apply) { ApplyModUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ManaCostModifier, school), mod, apply); }
@@ -1226,8 +1228,8 @@ class TC_GAME_API Unit : public WorldObject
         uint16 GetMaxSkillValueForLevel(Unit const* target = nullptr) const { return (target ? GetLevelForTarget(target) : getLevel()) * 5; }
         void DealDamageMods(Unit const* victim, uint32 &damage, uint32* absorb, DamageEffectType damagetype = DIRECT_DAMAGE) const;
         uint32 DealDamage(Unit* victim, uint32 damage, CleanDamage const* cleanDamage = nullptr, DamageEffectType damagetype = DIRECT_DAMAGE, SpellSchoolMask damageSchoolMask = SPELL_SCHOOL_MASK_NORMAL, SpellInfo const* spellProto = nullptr, bool durabilityLoss = true);
-        void Kill(Unit* victim, bool durabilityLoss = true);
-        void KillSelf(bool durabilityLoss = true) { Kill(this, durabilityLoss); }
+        void Kill(Unit* victim, bool durabilityLoss = true, bool skipSettingDeathState = false);
+        void KillSelf(bool durabilityLoss = true, bool skipSettingDeathState = false) { Kill(this, durabilityLoss, skipSettingDeathState); }
         void DealHeal(HealInfo& healInfo);
 
         void ProcSkillsAndAuras(Unit* actionTarget, uint32 typeMaskActor, uint32 typeMaskActionTarget,
@@ -1623,7 +1625,10 @@ class TC_GAME_API Unit : public WorldObject
         void _ApplyAllAuraStatMods();
 
         AuraEffectList const& GetAuraEffectsByType(AuraType type) const { return m_modAuras[type]; }
+
         AuraEffectList GetAuraEffectsByTypes(std::initializer_list<AuraType> types, ObjectGuid casterGUID = ObjectGuid::Empty) const;
+        AuraEffectList& GetAuraEffectsByType(AuraType type) { return m_modAuras[type]; }
+
         AuraList      & GetSingleCastAuras()       { return m_scAuras; }
         AuraList const& GetSingleCastAuras() const { return m_scAuras; }
 
@@ -1654,8 +1659,8 @@ class TC_GAME_API Unit : public WorldObject
         bool HasAuraTypeWithValue(AuraType auratype, int32 value) const;
         template <typename InterruptFlags>
         bool HasNegativeAuraWithInterruptFlag(InterruptFlags flag, ObjectGuid guid = ObjectGuid::Empty) const;
-        bool HasNegativeAuraWithAttribute(uint32 flag, ObjectGuid guid = ObjectGuid::Empty) const;
         bool HasAuraWithMechanic(uint32 mechanicMask) const;
+        bool HasStrongerAuraWithDR(SpellInfo const* auraSpellInfo, Unit* caster) const;
 
         AuraEffect* IsScriptOverriden(SpellInfo const* spell, int32 script) const;
         uint32 GetDiseasesByCaster(ObjectGuid casterGUID, bool remove = false);
@@ -1720,6 +1725,12 @@ class TC_GAME_API Unit : public WorldObject
         auto const& GetChannelObjects() const { return m_unitData->ChannelObjects; }
         void AddChannelObject(ObjectGuid guid) { AddDynamicUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ChannelObjects)) = guid; }
         void SetChannelObject(uint32 slot, ObjectGuid guid) { SetUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ChannelObjects, slot), guid); }
+        void RemoveChannelObject(ObjectGuid guid)
+        {
+            int32 index = m_unitData->ChannelObjects.FindIndex(guid);
+            if (index >= 0)
+                RemoveDynamicUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ChannelObjects), index);
+        }
         void ClearChannelObjects() { ClearDynamicUpdateFieldValues(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ChannelObjects)); }
 
         void SetCurrentCastSpell(Spell* pSpell);

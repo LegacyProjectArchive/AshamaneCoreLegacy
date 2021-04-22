@@ -553,6 +553,8 @@ bool PetAI::CanAttack(Unit* target)
     if (!me->GetCharmInfo())
         return false;
 
+    ASSERT(me->GetCharmInfo());
+	
     // Passive - passive pets can attack if told to
     if (me->HasReactState(REACT_PASSIVE))
         return me->GetCharmInfo()->IsCommandAttack();

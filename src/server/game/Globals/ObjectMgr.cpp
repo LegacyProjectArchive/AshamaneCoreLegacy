@@ -553,7 +553,7 @@ void ObjectMgr::LoadCreatureTemplate(Field* fields)
     creatureTemplate.WidgetSetUnitConditionID = fields[72].GetInt32();
     creatureTemplate.RegenHealth            = fields[73].GetBool();
     creatureTemplate.MechanicImmuneMask     = fields[74].GetUInt32();
-    creatureTemplate.SpellSchoolImmuneMask  = fields[75].GetUInt8();
+    creatureTemplate.SpellSchoolImmuneMask  = fields[75].GetUInt32();
     creatureTemplate.flags_extra            = fields[76].GetUInt32();
     creatureTemplate.ScriptID               = GetScriptIdOrAdd(fields[77].GetString());
 }
@@ -1059,16 +1059,30 @@ void ObjectMgr::CheckCreatureTemplate(CreatureTemplate const* cInfo)
         ok = true;
     }
 
-    if (cInfo->AIName == "TotemAI")
+    if (cInfo->mingold > cInfo->maxgold)
     {
-        TC_LOG_ERROR("sql.sql", "Creature (Entry: %u) has not-allowed `AIName` '%s' set, removing", cInfo->Entry, cInfo->AIName.c_str());
-        const_cast<CreatureTemplate*>(cInfo)->AIName.clear();
+        TC_LOG_ERROR("sql.sql", "Creature (Entry: %u) has `mingold` %u which is greater than `maxgold` %u, setting `maxgold` to %u.",
+            cInfo->Entry, cInfo->mingold, cInfo->maxgold, cInfo->mingold);
+        const_cast<CreatureTemplate*>(cInfo)->maxgold = cInfo->mingold;
     }
 
-    if (!cInfo->AIName.empty() && !sCreatureAIRegistry->HasItem(cInfo->AIName))
+    if (!cInfo->AIName.empty())
     {
-        TC_LOG_ERROR("sql.sql", "Creature (Entry: %u) has non-registered `AIName` '%s' set, removing", cInfo->Entry, cInfo->AIName.c_str());
-        const_cast<CreatureTemplate*>(cInfo)->AIName.clear();
+        auto registryItem = sCreatureAIRegistry->GetRegistryItem(cInfo->AIName);
+        if (!registryItem)
+        {
+            TC_LOG_ERROR("sql.sql", "Creature (Entry: %u) has non-registered `AIName` '%s' set, removing", cInfo->Entry, cInfo->AIName.c_str());
+            const_cast<CreatureTemplate*>(cInfo)->AIName.clear();
+        }
+        else
+        {
+            DBPermit const* permit = dynamic_cast<DBPermit const*>(registryItem);
+            if (!ASSERT_NOTNULL(permit)->IsScriptNameAllowedInDB())
+            {
+                TC_LOG_ERROR("sql.sql", "Creature (Entry: %u) has not-allowed `AIName` '%s' set, removing", cInfo->Entry, cInfo->AIName.c_str());
+                const_cast<CreatureTemplate*>(cInfo)->AIName.clear();
+            }
+        }
     }
 
     FactionTemplateEntry const* factionTemplate = sFactionTemplateStore.LookupEntry(cInfo->faction);

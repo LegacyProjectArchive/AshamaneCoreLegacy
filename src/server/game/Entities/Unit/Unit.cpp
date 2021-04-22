@@ -919,15 +919,82 @@ uint32 Unit::DealDamage(Unit* victim, uint32 damage, CleanDamage const* cleanDam
         }
     }
 
+    bool killed = false;
+    bool skipSettingDeathState = false;
+
     if (health <= damage)
     {
+        killed = true;
+
         TC_LOG_DEBUG("entities.unit", "DealDamage: victim just died");
 
         if (victim->GetTypeId() == TYPEID_PLAYER && victim != this)
             victim->ToPlayer()->UpdateCriteria(CRITERIA_TYPE_TOTAL_DAMAGE_RECEIVED, health);
 
-        Kill(victim, durabilityLoss);
+        if (damagetype != NODAMAGE && damagetype != SELF_DAMAGE && victim->HasAuraType(SPELL_AURA_SCHOOL_ABSORB_OVERKILL))
+        {
+            AuraEffectList vAbsorbOverkill = victim->GetAuraEffectsByType(SPELL_AURA_SCHOOL_ABSORB_OVERKILL);
+            DamageInfo damageInfo = DamageInfo(this, victim, damage, spellProto, damageSchoolMask, damagetype,
+                cleanDamage ? cleanDamage->attackType : BASE_ATTACK);
+            for (AuraEffect* absorbAurEff : vAbsorbOverkill)
+            {
+                Aura* base = absorbAurEff->GetBase();
+                AuraApplication const* aurApp = base->GetApplicationOfTarget(victim->GetGUID());
+                if (!aurApp)
+                    continue;
+
+                if (!(absorbAurEff->GetMiscValue() & damageInfo.GetSchoolMask()))
+                    continue;
+
+                // cannot absorb over limit
+                if (damage >= victim->CountPctFromMaxHealth(100 + absorbAurEff->GetMiscValueB()))
+                    continue;
+
+                // get amount which can be still absorbed by the aura
+                int32 currentAbsorb = absorbAurEff->GetAmount();
+                // aura with infinite absorb amount - let the scripts handle absorbtion amount, set here to 0 for safety
+                if (currentAbsorb < 0)
+                    currentAbsorb = 0;
+
+                uint32 tempAbsorb = uint32(currentAbsorb);
+
+                // This aura type is used both by Spirit of Redemption (death not really prevented, must grant all credit immediately) and Cheat Death (death prevented)
+                // repurpose PreventDefaultAction for this
+                bool deathFullyPrevented = false;
+
+                absorbAurEff->GetBase()->CallScriptEffectAbsorbHandlers(absorbAurEff, aurApp, damageInfo, tempAbsorb, deathFullyPrevented);
+                currentAbsorb = tempAbsorb;
+
+                // absorb must be smaller than the damage itself
+                currentAbsorb = RoundToInterval(currentAbsorb, 0, int32(damageInfo.GetDamage()));
+                damageInfo.AbsorbDamage(currentAbsorb);
+
+                if (deathFullyPrevented)
+                    killed = false;
+
+                skipSettingDeathState = true;
+
+                if (currentAbsorb)
+                {
+                    WorldPackets::CombatLog::SpellAbsorbLog absorbLog;
+                    absorbLog.Attacker = GetGUID();
+                    absorbLog.Victim = victim->GetGUID();
+                    absorbLog.Caster = base->GetCasterGUID();
+                    absorbLog.AbsorbedSpellID = spellProto ? spellProto->Id : 0;
+                    absorbLog.AbsorbSpellID = base->GetId();
+                    absorbLog.Absorbed = currentAbsorb;
+                    absorbLog.OriginalDamage = damageInfo.GetOriginalDamage();
+                    absorbLog.LogData.Initialize(victim);
+                    SendCombatLogMessage(&absorbLog);
+                }
+            }
+
+            damage = damageInfo.GetDamage();
+        }
     }
+
+    if (killed)
+        Kill(victim, durabilityLoss, skipSettingDeathState);
     else
     {
         TC_LOG_DEBUG("entities.unit", "DealDamageAlive");
@@ -1911,25 +1978,39 @@ void Unit::CalcAbsorbResist(DamageInfo& damageInfo)
         absorbAurEff->GetBase()->CallScriptEffectAbsorbHandlers(absorbAurEff, aurApp, damageInfo, tempAbsorb, defaultPrevented);
         currentAbsorb = tempAbsorb;
 
-        if (defaultPrevented)
-            continue;
-
-        // absorb must be smaller than the damage itself
-        currentAbsorb = RoundToInterval(currentAbsorb, 0, int32(damageInfo.GetDamage()));
-
-        damageInfo.AbsorbDamage(currentAbsorb);
-
-        tempAbsorb = currentAbsorb;
-        absorbAurEff->GetBase()->CallScriptEffectAfterAbsorbHandlers(absorbAurEff, aurApp, damageInfo, tempAbsorb);
-
-        // Check if our aura is using amount to count damage
-        if (absorbAurEff->GetAmount() >= 0)
+        if (!defaultPrevented)
         {
-            // Reduce shield amount
-            absorbAurEff->ChangeAmount(absorbAurEff->GetAmount() - currentAbsorb);
-            // Aura cannot absorb anything more - remove it
-            if (absorbAurEff->GetAmount() <= 0)
-                absorbAurEff->GetBase()->Remove(AURA_REMOVE_BY_ENEMY_SPELL);
+            // absorb must be smaller than the damage itself
+            currentAbsorb = RoundToInterval(currentAbsorb, 0, int32(damageInfo.GetDamage()));
+
+            damageInfo.AbsorbDamage(currentAbsorb);
+
+            tempAbsorb = currentAbsorb;
+            absorbAurEff->GetBase()->CallScriptEffectAfterAbsorbHandlers(absorbAurEff, aurApp, damageInfo, tempAbsorb);
+
+            // Check if our aura is using amount to count damage
+            if (absorbAurEff->GetAmount() >= 0)
+            {
+                // Reduce shield amount
+                absorbAurEff->ChangeAmount(absorbAurEff->GetAmount() - currentAbsorb);
+                // Aura cannot absorb anything more - remove it
+                if (absorbAurEff->GetAmount() <= 0)
+                    absorbAurEff->GetBase()->Remove(AURA_REMOVE_BY_ENEMY_SPELL);
+            }
+        }
+
+        if (currentAbsorb)
+        {
+            WorldPackets::CombatLog::SpellAbsorbLog absorbLog;
+            absorbLog.Attacker = damageInfo.GetAttacker()->GetGUID();
+            absorbLog.Victim = damageInfo.GetVictim()->GetGUID();
+            absorbLog.Caster = absorbAurEff->GetBase()->GetCasterGUID();
+            absorbLog.AbsorbedSpellID = damageInfo.GetSpellInfo() ? damageInfo.GetSpellInfo()->Id : 0;
+            absorbLog.AbsorbSpellID = absorbAurEff->GetId();
+            absorbLog.Absorbed = currentAbsorb;
+            absorbLog.OriginalDamage = damageInfo.GetOriginalDamage();
+            absorbLog.LogData.Initialize(damageInfo.GetVictim());
+            SendCombatLogMessage(&absorbLog);
         }
     }
 
@@ -1959,34 +2040,48 @@ void Unit::CalcAbsorbResist(DamageInfo& damageInfo)
         absorbAurEff->GetBase()->CallScriptEffectManaShieldHandlers(absorbAurEff, aurApp, damageInfo, tempAbsorb, defaultPrevented);
         currentAbsorb = tempAbsorb;
 
-        if (defaultPrevented)
-            continue;
-
-        // absorb must be smaller than the damage itself
-        currentAbsorb = RoundToInterval(currentAbsorb, 0, int32(damageInfo.GetDamage()));
-
-        int32 manaReduction = currentAbsorb;
-
-        // lower absorb amount by talents
-        if (float manaMultiplier = absorbAurEff->GetSpellEffectInfo()->CalcValueMultiplier(absorbAurEff->GetCaster()))
-            manaReduction = int32(float(manaReduction) * manaMultiplier);
-
-        int32 manaTaken = -damageInfo.GetVictim()->ModifyPower(POWER_MANA, -manaReduction);
-
-        // take case when mana has ended up into account
-        currentAbsorb = currentAbsorb ? int32(float(currentAbsorb) * (float(manaTaken) / float(manaReduction))) : 0;
-
-        damageInfo.AbsorbDamage(currentAbsorb);
-
-        tempAbsorb = currentAbsorb;
-        absorbAurEff->GetBase()->CallScriptEffectAfterManaShieldHandlers(absorbAurEff, aurApp, damageInfo, tempAbsorb);
-
-        // Check if our aura is using amount to count damage
-        if (absorbAurEff->GetAmount() >= 0)
+        if (!defaultPrevented)
         {
-            absorbAurEff->ChangeAmount(absorbAurEff->GetAmount() - currentAbsorb);
-            if ((absorbAurEff->GetAmount() <= 0))
-                absorbAurEff->GetBase()->Remove(AURA_REMOVE_BY_ENEMY_SPELL);
+            // absorb must be smaller than the damage itself
+            currentAbsorb = RoundToInterval(currentAbsorb, 0, int32(damageInfo.GetDamage()));
+
+            int32 manaReduction = currentAbsorb;
+
+            // lower absorb amount by talents
+            if (float manaMultiplier = absorbAurEff->GetSpellEffectInfo()->CalcValueMultiplier(absorbAurEff->GetCaster()))
+                manaReduction = int32(float(manaReduction) * manaMultiplier);
+
+            int32 manaTaken = -damageInfo.GetVictim()->ModifyPower(POWER_MANA, -manaReduction);
+
+            // take case when mana has ended up into account
+            currentAbsorb = currentAbsorb ? int32(float(currentAbsorb) * (float(manaTaken) / float(manaReduction))) : 0;
+
+            damageInfo.AbsorbDamage(currentAbsorb);
+
+            tempAbsorb = currentAbsorb;
+            absorbAurEff->GetBase()->CallScriptEffectAfterManaShieldHandlers(absorbAurEff, aurApp, damageInfo, tempAbsorb);
+
+            // Check if our aura is using amount to count damage
+            if (absorbAurEff->GetAmount() >= 0)
+            {
+                absorbAurEff->ChangeAmount(absorbAurEff->GetAmount() - currentAbsorb);
+                if ((absorbAurEff->GetAmount() <= 0))
+                    absorbAurEff->GetBase()->Remove(AURA_REMOVE_BY_ENEMY_SPELL);
+            }
+        }
+
+        if (currentAbsorb)
+        {
+            WorldPackets::CombatLog::SpellAbsorbLog absorbLog;
+            absorbLog.Attacker = damageInfo.GetAttacker()->GetGUID();
+            absorbLog.Victim = damageInfo.GetVictim()->GetGUID();
+            absorbLog.Caster = absorbAurEff->GetBase()->GetCasterGUID();
+            absorbLog.AbsorbedSpellID = damageInfo.GetSpellInfo() ? damageInfo.GetSpellInfo()->Id : 0;
+            absorbLog.AbsorbSpellID = absorbAurEff->GetId();
+            absorbLog.Absorbed = currentAbsorb;
+            absorbLog.OriginalDamage = damageInfo.GetOriginalDamage();
+            absorbLog.LogData.Initialize(damageInfo.GetVictim());
+            SendCombatLogMessage(&absorbLog);
         }
     }
 
@@ -4849,17 +4944,6 @@ bool Unit::HasNegativeAuraWithInterruptFlag(InterruptFlags flag, ObjectGuid guid
 template TC_GAME_API bool Unit::HasNegativeAuraWithInterruptFlag(SpellAuraInterruptFlags flag, ObjectGuid guid) const;
 template TC_GAME_API bool Unit::HasNegativeAuraWithInterruptFlag(SpellAuraInterruptFlags2 flag, ObjectGuid guid) const;
 
-bool Unit::HasNegativeAuraWithAttribute(uint32 flag, ObjectGuid guid) const
-{
-    for (AuraApplicationMap::const_iterator iter = m_appliedAuras.begin(); iter != m_appliedAuras.end(); ++iter)
-    {
-        Aura const* aura = iter->second->GetBase();
-        if (!iter->second->IsPositive() && aura->GetSpellInfo()->Attributes & flag && (!guid || aura->GetCasterGUID() == guid))
-            return true;
-    }
-    return false;
-}
-
 bool Unit::HasAuraWithMechanic(uint32 mechanicMask) const
 {
     for (AuraApplicationMap::const_iterator iter = m_appliedAuras.begin(); iter != m_appliedAuras.end(); ++iter)
@@ -4872,6 +4956,26 @@ bool Unit::HasAuraWithMechanic(uint32 mechanicMask) const
             if (effect && effect->Effect && effect->Mechanic)
                 if (mechanicMask & (1 << effect->Mechanic))
                     return true;
+    }
+
+    return false;
+}
+
+bool Unit::HasStrongerAuraWithDR(SpellInfo const* auraSpellInfo, Unit* caster) const
+{
+    DiminishingGroup diminishGroup = auraSpellInfo->GetDiminishingReturnsGroupForSpell();
+    DiminishingLevels level = GetDiminishing(diminishGroup);
+    for (auto itr = m_appliedAuras.begin(); itr != m_appliedAuras.end(); ++itr)
+    {
+        SpellInfo const* spellInfo = itr->second->GetBase()->GetSpellInfo();
+        if (spellInfo->GetDiminishingReturnsGroupForSpell() != diminishGroup)
+            continue;
+
+        int32 existingDuration = itr->second->GetBase()->GetMaxDuration();
+        int32 newDuration = auraSpellInfo->GetMaxDuration();
+        ApplyDiminishingToDuration(auraSpellInfo, newDuration, caster, level);
+        if (newDuration > 0 && newDuration < existingDuration)
+            return true;
     }
 
     return false;
@@ -8957,6 +9061,20 @@ int64 Unit::GetHealthGain(int64 dVal)
     return gain;
 }
 
+// Always return negative value for power reduction (or 0)
+int32 Unit::ConsumeAllPower(Powers power)
+{
+    int32 curPower = GetPower(power);
+    int32 minPower = GetMinPower(power);
+
+    if (curPower <= minPower)
+        return 0;
+
+    int32 diff = minPower - curPower;
+    SetPower(power, minPower);
+    return diff;
+}
+
 // returns negative amount on power reduction
 int32 Unit::ModifyPower(Powers power, int32 dVal)
 {
@@ -9789,31 +9907,28 @@ void Unit::ModSpellDurationTime(SpellInfo const* spellInfo, int32 & duration, Sp
         duration = int32(float(duration) * m_modAttackSpeedPct[RANGED_ATTACK]);
 }
 
-DiminishingLevels Unit::GetDiminishing(DiminishingGroup group)
+DiminishingLevels Unit::GetDiminishing(DiminishingGroup group) const
 {
-    DiminishingReturn& diminish = m_Diminishing[group];
+    DiminishingReturn const& diminish = m_Diminishing[group];
     if (!diminish.hitCount)
         return DIMINISHING_LEVEL_1;
 
-    // If last spell was cast more than 18 seconds ago - reset the count.
+    // If last spell was cast more than 18 seconds ago - reset level.
     if (!diminish.stack && GetMSTimeDiffToNow(diminish.hitTime) > 18 * IN_MILLISECONDS)
-    {
-        diminish.hitCount = DIMINISHING_LEVEL_1;
         return DIMINISHING_LEVEL_1;
-    }
 
     return DiminishingLevels(diminish.hitCount);
 }
 
 void Unit::IncrDiminishing(SpellInfo const* auraSpellInfo)
 {
-    DiminishingGroup const group = auraSpellInfo->GetDiminishingReturnsGroupForSpell();
-    DiminishingLevels const maxLevel = auraSpellInfo->GetDiminishingReturnsMaxLevel();
+    DiminishingGroup group = auraSpellInfo->GetDiminishingReturnsGroupForSpell();
+    uint32 currentLevel = GetDiminishing(group);
+    uint32 const maxLevel = auraSpellInfo->GetDiminishingReturnsMaxLevel();
 
-    // Checking for existing in the table
     DiminishingReturn& diminish = m_Diminishing[group];
-    if (static_cast<int32>(diminish.hitCount) < maxLevel)
-        ++diminish.hitCount;
+    if (currentLevel < maxLevel)
+        diminish.hitCount = currentLevel + 1;
 }
 
 bool Unit::ApplyDiminishingToDuration(SpellInfo const* auraSpellInfo, int32& duration, Unit* caster, DiminishingLevels previousLevel) const
@@ -9833,9 +9948,7 @@ bool Unit::ApplyDiminishingToDuration(SpellInfo const* auraSpellInfo, int32& dur
         Unit const* target = targetOwner ? targetOwner : this;
         Unit const* source = casterOwner ? casterOwner : caster;
 
-        if ((target->GetTypeId() == TYPEID_PLAYER
-            || (target->ToCreature()->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_ALL_DIMINISH))
-            && source->GetTypeId() == TYPEID_PLAYER)
+        if (target->IsAffectedByDiminishingReturns() && source->GetTypeId() == TYPEID_PLAYER)
             duration = limitDuration;
     }
 
@@ -9861,9 +9974,9 @@ bool Unit::ApplyDiminishingToDuration(SpellInfo const* auraSpellInfo, int32& dur
         }
         case DIMINISHING_AOE_KNOCKBACK:
         {
-            if ((auraSpellInfo->GetDiminishingReturnsGroupType() == DRTYPE_PLAYER && (((targetOwner ? targetOwner : this)->ToPlayer())
-                || (ToCreature() && (ToCreature()->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_ALL_DIMINISH))))
-                || auraSpellInfo->GetDiminishingReturnsGroupType() == DRTYPE_ALL)
+            if (auraSpellInfo->GetDiminishingReturnsGroupType() == DRTYPE_ALL ||
+                (auraSpellInfo->GetDiminishingReturnsGroupType() == DRTYPE_PLAYER &&
+                    (targetOwner ? targetOwner->IsAffectedByDiminishingReturns() : IsAffectedByDiminishingReturns())))
             {
                 DiminishingLevels diminish = previousLevel;
                 switch (diminish)
@@ -9877,9 +9990,9 @@ bool Unit::ApplyDiminishingToDuration(SpellInfo const* auraSpellInfo, int32& dur
         }
         default:
         {
-            if ((auraSpellInfo->GetDiminishingReturnsGroupType() == DRTYPE_PLAYER && (((targetOwner ? targetOwner : this)->ToPlayer())
-                || (ToCreature() && (ToCreature()->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_ALL_DIMINISH))))
-                || auraSpellInfo->GetDiminishingReturnsGroupType() == DRTYPE_ALL)
+            if (auraSpellInfo->GetDiminishingReturnsGroupType() == DRTYPE_ALL ||
+                (auraSpellInfo->GetDiminishingReturnsGroupType() == DRTYPE_PLAYER &&
+                    (targetOwner ? targetOwner->IsAffectedByDiminishingReturns() : IsAffectedByDiminishingReturns())))
             {
                 DiminishingLevels diminish = previousLevel;
                 switch (diminish)
@@ -11974,7 +12087,7 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
     SendMessageToSet(data.Write(), true);
 }
 
-void Unit::Kill(Unit* victim, bool durabilityLoss)
+void Unit::Kill(Unit* victim, bool durabilityLoss /*= true*/, bool skipSettingDeathState /*= false*/)
 {
     // Prevent killing unit twice (and giving reward from kill twice)
     if (!victim->GetHealth())
@@ -12090,8 +12203,11 @@ void Unit::Kill(Unit* victim, bool durabilityLoss)
     if (Player* killerPlayer = GetCharmerOrOwnerPlayerOrPlayerItself())
         killerPlayer->UpdateCriteria(CRITERIA_TYPE_GET_KILLING_BLOWS, 1, 0, 0, victim);
 
-    TC_LOG_DEBUG("entities.unit", "SET JUST_DIED");
-    victim->setDeathState(JUST_DIED);
+    if (!skipSettingDeathState)
+    {
+        TC_LOG_DEBUG("entities.unit", "SET JUST_DIED");
+        victim->setDeathState(JUST_DIED);
+    }
 
     // Inform pets (if any) when player kills target)
     // MUST come after victim->setDeathState(JUST_DIED); or pet next target
