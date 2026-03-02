@@ -81,6 +81,7 @@ class Item;
 class LootStore;
 class OutdoorPvP;
 class Pet;
+class PetAura;
 class PlayerAI;
 class PlayerAchievementMgr;
 class PlayerMenu;
@@ -1188,6 +1189,11 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         Pet* SummonPet(uint32 entry, float x, float y, float z, float ang, PetType petType, uint32 despwtime);
         void RemovePet(Pet* pet, PetSaveMode mode, bool returnreagent = false);
 
+        // pet auras
+        std::unordered_set<PetAura const*> m_petAuras;
+        void AddPetAura(PetAura const* petSpell);
+        void RemovePetAura(PetAura const* petSpell);
+
         /// Handles said message in regular chat based on declared language and in config pre-defined Range.
         void Say(std::string const& text, Language language, WorldObject const* = nullptr) override;
         void Say(uint32 textId, WorldObject const* target = nullptr) override;
@@ -1439,16 +1445,16 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool SatisfyQuestSkill(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestLevel(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestLog(bool msg) const;
-        bool SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg);
+        bool SatisfyQuestDependentQuests(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestDependentPreviousQuests(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestClass(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestRace(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestReputation(Quest const* qInfo, bool msg);
         bool SatisfyQuestStatus(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestConditions(Quest const* qInfo, bool msg);
         bool SatisfyQuestTimed(Quest const* qInfo, bool msg) const;
-        bool SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg);
-        bool SatisfyQuestNextChain(Quest const* qInfo, bool msg) const;
-        bool SatisfyQuestPrevChain(Quest const* qInfo, bool msg);
+        bool SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestDay(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestWeek(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestMonth(Quest const* qInfo, bool msg) const;
@@ -1518,7 +1524,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         void SendQuestTimerFailed(uint32 questID) const;
         void SendCanTakeQuestResponse(QuestFailedReason reason, bool sendErrorMessage = true, std::string reasonText = "") const;
         void SendQuestConfirmAccept(Quest const* quest, Player* receiver) const;
-        void SendPushToPartyResponse(Player* player, QuestPushReason reason) const;
+        void SendPushToPartyResponse(Player const* player, QuestPushReason reason) const;
         void SendQuestUpdateAddCredit(Quest const* quest, ObjectGuid guid, QuestObjective const& obj, uint16 count) const;
         void SendQuestUpdateAddCreditSimple(QuestObjective const& obj) const;
         void SendQuestUpdateAddPlayer(Quest const* quest, uint16 newCount) const;
@@ -1657,7 +1663,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         SpellInfo const* GetCastSpellInfo(SpellInfo const* spellInfo) const override;
         TrainerSpellState GetTrainerSpellState(TrainerSpell const* trainer_spell) const;
         bool IsSpellFitByClassAndRace(uint32 spell_id) const;
-        bool IsNeedCastPassiveSpellAtLearn(SpellInfo const* spellInfo) const;
+        bool HandlePassiveSpellLearn(SpellInfo const* spellInfo);
         bool IsCurrentSpecMasterySpell(SpellInfo const* spellInfo) const;
 
         void SendProficiency(ItemClass itemClass, uint32 itemSubclassMask) const;
@@ -2409,7 +2415,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         uint32 GetAchievementPoints() const;
         bool HasAchieved(uint32 achievementId) const;
         void ResetAchievements();
-        void ResetCriteria(CriteriaTypes type, uint64 miscValue1 = 0, uint64 miscValue2 = 0, bool evenIfCriteriaComplete = false);
+        void ResetCriteria(CriteriaCondition condition, int32 failAsset, bool evenIfCriteriaComplete = false);
         void UpdateCriteria(CriteriaTypes type, uint64 miscValue1 = 0, uint64 miscValue2 = 0, uint64 miscValue3 = 0, Unit* unit = NULL);
         void StartCriteriaTimer(CriteriaTimedTypes type, uint32 entry, uint32 timeLost = 0);
         void RemoveCriteriaTimer(CriteriaTimedTypes type, uint32 entry);

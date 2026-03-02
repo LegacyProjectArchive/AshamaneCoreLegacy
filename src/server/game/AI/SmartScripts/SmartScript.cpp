@@ -2326,12 +2326,8 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
             for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
             {
                 if (Creature* creature = (*itr)->ToCreature())
-                {
-                    creature->GetMotionMaster()->Clear();
                     creature->GetMotionMaster()->MoveJump(e.target.x, e.target.y, e.target.z, 0.0f, (float)e.action.jump.speedxy, (float)e.action.jump.speedz); // @todo add optional jump orientation support?
-                }
             }
-            /// @todo Resume path when reached jump location
 
             delete targets;
             break;
@@ -4078,13 +4074,6 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
         {
             TC_LOG_DEBUG("scripts.ai", "SmartScript: Gossip Select:  menu %u action %u", var0, var1);//little help for scripters
             if (e.event.gossip.sender != var0 || e.event.gossip.action != var1)
-                return;
-            ProcessAction(e, unit, var0, var1);
-            break;
-        }
-        case SMART_EVENT_DUMMY_EFFECT:
-        {
-            if (e.event.dummy.spell != var0 || e.event.dummy.effIndex != var1)
                 return;
             ProcessAction(e, unit, var0, var1);
             break;

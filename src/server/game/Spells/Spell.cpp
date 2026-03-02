@@ -1349,6 +1349,12 @@ void Spell::SelectImplicitAreaTargets(SpellEffIndex effIndex, SpellImplicitTarge
         return;
     float radius = effect->CalcRadius(m_caster) * m_spellValue->RadiusMod;
 
+    // if this is a proximity based aoe (Frost Nova, Psychic Scream, ...), include the caster's own combat reach
+    if (targetType.IsProximityBasedAoe())
+        radius += GetCaster()->GetCombatReach();
+
+    SearchAreaTargets(targets, radius, center, referer, targetType.GetObjectType(), targetType.GetCheckType(), effect->ImplicitTargetConditions);
+
     if (targetType.GetTarget() == TARGET_UNIT_CASTER_PET)
     {
         targets.push_back(referer);
@@ -1413,7 +1419,7 @@ void Spell::SelectImplicitCasterDestTargets(SpellEffIndex effIndex, SpellImplici
             float dist = frand(minDist, maxDist);
             float x, y, z;
             float angle = float(rand_norm()) * static_cast<float>(M_PI * 35.0f / 180.0f) - static_cast<float>(M_PI * 17.5f / 180.0f);
-            m_caster->GetClosePoint(x, y, z, DEFAULT_WORLD_OBJECT_SIZE, dist, angle);
+            m_caster->GetClosePoint(x, y, z, DEFAULT_PLAYER_BOUNDING_RADIUS, dist, angle);
 
             float ground = m_caster->GetMap()->GetHeight(m_caster->GetPhaseShift(), x, y, z, true, 50.0f);
             float liquidLevel = VMAP_INVALID_HEIGHT_VALUE;
@@ -1446,7 +1452,7 @@ void Spell::SelectImplicitCasterDestTargets(SpellEffIndex effIndex, SpellImplici
             {
                 float dist = effect->CalcRadius(m_caster);
                 float angle = targetType.CalcDirectionAngle();
-                float objSize = m_caster->GetObjectSize();
+                float objSize = m_caster->GetCombatReach();
 
                 switch (targetType.GetTarget())
                 {
@@ -1504,7 +1510,7 @@ void Spell::SelectImplicitTargetDestTargets(SpellEffIndex effIndex, SpellImplici
             if (SpellEffectInfo const* effect = GetEffect(effIndex))
             {
                 float angle = targetType.CalcDirectionAngle();
-                float objSize = target->GetObjectSize();
+                float objSize = target->GetCombatReach();
                 float dist = effect->CalcRadius(m_caster);
                 if (dist < objSize)
                     dist = objSize;
@@ -1751,7 +1757,7 @@ void Spell::SelectImplicitTrajTargets(SpellEffIndex effIndex, SpellImplicitTarge
             }
         }
 
-        const float size = std::max((*itr)->GetObjectSize(), 1.0f);
+        const float size = std::max((*itr)->GetCombatReach(), 1.0f);
         const float objDist2d = srcPos.GetExactDist2d(*itr);
         const float dz = (*itr)->GetPositionZ() - srcPos.m_positionZ;
 
@@ -2802,11 +2808,25 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
                 }
 
                 // Now Reduce spell duration using data received at spell hit
+                // check whatever effects we're going to apply, diminishing returns only apply to negative aura effects
+                bool positive = true;
+                if (m_originalCaster == unit || !m_originalCaster->IsFriendlyTo(unit))
+                {
+                    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                    {
+                        if ((effectMask & (1 << i)) && !m_spellInfo->IsPositiveEffect(i))
+                        {
+                            positive = false;
+                            break;
+                        }
+                    }
+                }
+
                 int32 duration = m_spellAura->GetMaxDuration();
                 float diminishMod = unit->ApplyDiminishingToDuration(aurSpellInfo, duration, m_originalCaster, diminishLevel);
 
                 // unit is immune to aura if it was diminished to 0 duration
-                if (diminishMod == 0.0f)
+                if (!positive && !unit->ApplyDiminishingToDuration(m_spellInfo, duration, m_originalCaster, diminishLevel))
                 {
                     m_spellAura->Remove();
                     bool found = false;
@@ -2818,11 +2838,7 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
                 }
                 else
                 {
-                    ((UnitAura*)m_spellAura)->SetDiminishGroup(diminishGroup);
-
-                    bool positive = m_spellAura->GetSpellInfo()->IsPositive();
-                    if (AuraApplication* aurApp = m_spellAura->GetApplicationOfTarget(m_originalCaster->GetGUID()))
-                        positive = aurApp->IsPositive();
+                    static_cast<UnitAura*>(m_spellAura)->SetDiminishGroup(diminishGroup);
 
                     duration = m_originalCaster->ModSpellDuration(aurSpellInfo, unit, duration, positive, effectMask);
 
@@ -3152,15 +3168,6 @@ bool Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
 
     m_casttime *= m_caster->GetTotalAuraMultiplier(SPELL_AURA_MOD_CASTING_SPEED);
 
-    if (m_caster->GetTypeId() == TYPEID_UNIT && !m_caster->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)) // _UNIT actually means creature. for some reason.
-        if (!(m_spellInfo->IsNextMeleeSwingSpell() || IsAutoRepeat() || (_triggeredCastFlags & TRIGGERED_IGNORE_SET_FACING)))
-        {
-            if (m_targets.GetObjectTarget() && m_caster != m_targets.GetObjectTarget())
-                m_caster->ToCreature()->FocusTarget(this, m_targets.GetObjectTarget());
-            else if (!m_spellInfo->CasterCanTurnDuringCast())
-                m_caster->ToCreature()->FocusTarget(this, nullptr);
-        }
-
     // don't allow channeled spells / spells with cast time to be cast while moving
     // exception are only channeled spells that have no casttime and SPELL_ATTR5_CAN_CHANNEL_WHEN_MOVING
     // (even if they are interrupted on moving, spells with almost immediate effect get to have their effect processed before movement interrupter kicks in)
@@ -3174,6 +3181,18 @@ bool Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
             SendCastResult(SPELL_FAILED_MOVING);
             finish(false);
             return false;
+        }
+    }
+
+    // focus if not controlled creature
+    if (m_caster->GetTypeId() == TYPEID_UNIT && !m_caster->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
+    {
+        if (!(m_spellInfo->IsNextMeleeSwingSpell() || IsAutoRepeat() || (_triggeredCastFlags & TRIGGERED_IGNORE_SET_FACING)))
+        {
+            if (m_targets.GetObjectTarget() && m_caster != m_targets.GetObjectTarget())
+                m_caster->ToCreature()->FocusTarget(this, m_targets.GetObjectTarget());
+            else if (m_spellInfo->HasAttribute(SPELL_ATTR5_DONT_TURN_DURING_CAST))
+                m_caster->ToCreature()->FocusTarget(this, nullptr);
         }
     }
 
@@ -3326,11 +3345,12 @@ void Spell::_cast(bool skipCheck)
             m_caster->SetInFront(m_targets.GetObjectTarget());
 
     // Should this be done for original caster?
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
+    Player* modOwner = m_caster->GetSpellModOwner();
+    if (modOwner)
     {
         // Set spell which will drop charges for triggered cast spells
         // if not successfully cast, will be remove in finish(false)
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, true);
+        modOwner->SetSpellModTakingSpell(this, true);
     }
 
     CallScriptBeforeCastHandlers();
@@ -3345,8 +3365,8 @@ void Spell::_cast(bool skipCheck)
             SendCastResult(castResult, &param1, &param2);
             SendInterrupted(0);
 
-            if (m_caster->GetTypeId() == TYPEID_PLAYER)
-                m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+            if (modOwner)
+                modOwner->SetSpellModTakingSpell(this, false);
 
             finish(false);
             SetExecutedCurrently(false);
@@ -3357,9 +3377,9 @@ void Spell::_cast(bool skipCheck)
         // if trade not complete then remember it in trade data
         if (m_targets.GetTargetMask() & TARGET_FLAG_TRADE_ITEM)
         {
-            if (m_caster->GetTypeId() == TYPEID_PLAYER)
+            if (modOwner)
             {
-                if (TradeData* my_trade = m_caster->ToPlayer()->GetTradeData())
+                if (TradeData* my_trade = modOwner->GetTradeData())
                 {
                     if (!my_trade->IsInAcceptProcess())
                     {
@@ -3368,7 +3388,7 @@ void Spell::_cast(bool skipCheck)
                         SendCastResult(SPELL_FAILED_DONT_REPORT);
                         SendInterrupted(0);
 
-                        m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+                        modOwner->SetSpellModTakingSpell(this, false);
 
                         finish(false);
                         SetExecutedCurrently(false);
@@ -3491,12 +3511,12 @@ void Spell::_cast(bool skipCheck)
                 m_caster->CastSpell(m_targets.GetUnitTarget() ? m_targets.GetUnitTarget() : m_caster, *i, true);
     }
 
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
+    if (modOwner)
     {
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+        modOwner->SetSpellModTakingSpell(this, false);
 
         //Clear spell cooldowns after every spell is cast if .cheat cooldown is enabled.
-        if (m_caster->ToPlayer()->GetCommandStatus(CHEAT_COOLDOWN))
+        if (modOwner->GetCommandStatus(CHEAT_COOLDOWN))
         {
             m_caster->GetSpellHistory()->ResetCooldown(m_spellInfo->Id, true);
             m_caster->GetSpellHistory()->RestoreCharge(m_spellInfo->ChargeCategoryId);
@@ -3504,9 +3524,6 @@ void Spell::_cast(bool skipCheck)
     }
 
     SetExecutedCurrently(false);
-
-    if (Creature* creatureCaster = m_caster->ToCreature())
-        creatureCaster->ReleaseFocus(this);
 
     if (!m_originalCaster)
         return;
@@ -3627,8 +3644,9 @@ uint64 Spell::handle_delayed(uint64 t_offset)
     if (single_missile && !t_offset)
         return m_delayMoment;
 
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, true);
+    Player* modOwner = m_caster->GetSpellModOwner();
+    if (modOwner)
+        modOwner->SetSpellModTakingSpell(this, true);
 
     PrepareTargetProcessing();
 
@@ -3667,8 +3685,8 @@ uint64 Spell::handle_delayed(uint64 t_offset)
 
     FinishTargetProcessing();
 
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+    if (modOwner)
+        modOwner->SetSpellModTakingSpell(this, false);
 
     // All targets passed - need finish phase
     if (next_time == 0)
@@ -4171,6 +4189,23 @@ void Spell::SendCastResult(Player* caster, SpellInfo const* spellInfo, uint32 sp
     caster->GetSession()->SendPacket(packet.Write());
 }
 
+void Spell::SendMountResult(MountResult result)
+{
+    if (result == MountResult::Ok)
+        return;
+
+    if (!m_caster->IsPlayer())
+        return;
+
+    Player* caster = m_caster->ToPlayer();
+    if (caster->IsLoading())  // don't send mount results at loading time
+        return;
+
+    WorldPackets::Spells::MountResult packet;
+    packet.Result = AsUnderlyingType(result);
+    caster->SendDirectMessage(packet.Write());
+}
+
 void Spell::SendSpellStart()
 {
     if (!IsNeedSendToClient())
@@ -4656,7 +4691,15 @@ void Spell::SendChannelStart(uint32 duration)
 
     m_timer = duration;
     for (TargetInfo const& target : m_UniqueTargetInfo)
+    {
         m_caster->AddChannelObject(target.targetGUID);
+
+        if (m_UniqueTargetInfo.size() == 1 && m_UniqueGOTargetInfo.empty())
+            if(target.targetGUID != m_caster->GetGUID())
+                if (Creature* creatureCaster = m_caster->ToCreature())
+                    if (!creatureCaster->IsFocusing(this))
+                        creatureCaster->FocusTarget(this, ObjectAccessor::GetWorldObject(*creatureCaster, target.targetGUID));
+    }
 
     for (GOTargetInfo const& target : m_UniqueGOTargetInfo)
         m_caster->AddChannelObject(target.targetGUID);
@@ -5532,13 +5575,13 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* param1 /*= nullptr*/, uint
                     if (!target->IsWithinLOSInMap(m_caster)) //Do full LoS/Path check. Don't exclude m2
                         return SPELL_FAILED_LINE_OF_SIGHT;
 
-                    float objSize = target->GetObjectSize();
+                    float objSize = target->GetCombatReach();
                     float range = m_spellInfo->GetMaxRange(true, m_caster, this) * 1.5f + objSize; // can't be overly strict
 
                     m_preGeneratedPath = Trinity::make_unique<PathGenerator>(m_caster);
                     m_preGeneratedPath->SetPathLengthLimit(range);
                     // first try with raycast, if it fails fall back to normal path
-                    float targetObjectSize = std::min(target->GetObjectSize(), 4.0f);
+                    float targetObjectSize = std::min(target->GetCombatReach(), 4.0f);
                     bool result = m_preGeneratedPath->CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ() + targetObjectSize, false, true);
                     if (m_preGeneratedPath->GetPathType() & PATHFIND_SHORT)
                         return SPELL_FAILED_OUT_OF_RANGE;
@@ -5939,7 +5982,10 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* param1 /*= nullptr*/, uint
                     return SPELL_FAILED_NO_MOUNTS_ALLOWED;
 
                 if (m_caster->IsInDisallowedMountForm())
-                    return SPELL_FAILED_NOT_SHAPESHIFT;
+                {
+                    SendMountResult(MountResult::Shapeshifted); // mount result gets sent before the cast result
+                    return SPELL_FAILED_DONT_REPORT;
+                }
 
                 break;
             }
@@ -8188,8 +8234,20 @@ WorldObjectSpellAreaTargetCheck::WorldObjectSpellAreaTargetCheck(float range, Po
 
 bool WorldObjectSpellAreaTargetCheck::operator()(WorldObject* target)
 {
-    if (!target->IsWithinDist3d(_position, _range) && !(target->ToGameObject() && target->ToGameObject()->IsInRange(_position->GetPositionX(), _position->GetPositionY(), _position->GetPositionZ(), _range)))
-        return false;
+    if (target->ToGameObject())
+    {
+        // isInRange including the dimension of the GO
+        bool isInRange = target->ToGameObject()->IsInRange(_position->GetPositionX(), _position->GetPositionY(), _position->GetPositionZ(), _range);
+        if (!isInRange)
+            return false;
+    }
+    else
+    {
+        bool isInsideCylinder = target->IsWithinDist2d(_position, _range) && std::abs(target->GetPositionZ() - _position->GetPositionZ()) <= _range;
+        if (!isInsideCylinder)
+            return false;
+    }
+
     return WorldObjectSpellTargetCheck::operator ()(target);
 }
 
@@ -8206,7 +8264,7 @@ bool WorldObjectSpellConeTargetCheck::operator()(WorldObject* target)
     }
     else if (_spellInfo->HasAttribute(SPELL_ATTR0_CU_CONE_LINE))
     {
-        if (!_caster->HasInLine(target, target->GetObjectSize(), _caster->GetObjectSize()))
+        if (!_caster->HasInLine(target, target->GetCombatReach(), _caster->GetCombatReach()))
             return false;
     }
     else
@@ -8228,7 +8286,7 @@ WorldObjectSpellLineTargetCheck::WorldObjectSpellLineTargetCheck(float range, Un
 
 bool WorldObjectSpellLineTargetCheck::operator()(WorldObject* target)
 {
-    if (!_caster->HasInLine(target, target->GetObjectSize(), TRAJECTORY_MISSILE_SIZE))
+    if (!_caster->HasInLine(target, target->GetCombatReach(), TRAJECTORY_MISSILE_SIZE))
         return false;
 
     if (target->GetExactDist2d(_position) > _range)
@@ -8243,7 +8301,7 @@ WorldObjectSpellTrajTargetCheck::WorldObjectSpellTrajTargetCheck(float range, Po
 bool WorldObjectSpellTrajTargetCheck::operator()(WorldObject* target)
 {
     // return all targets on missile trajectory (0 - size of a missile)
-    if (!_caster->HasInLine(target, target->GetObjectSize(), TRAJECTORY_MISSILE_SIZE))
+    if (!_caster->HasInLine(target, target->GetCombatReach(), TRAJECTORY_MISSILE_SIZE))
         return false;
 
     if (target->GetExactDist2d(_position) > _range)

@@ -31,8 +31,10 @@
 #include "WaypointMovementGenerator.h"
 #include "RandomMovementGenerator.h"
 #include "SplineChainMovementGenerator.h"
+#include "FormationMovementGenerator.h"
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
+#include "PathGenerator.h"
 
 inline bool IsStatic(MovementGenerator* movement)
 {
@@ -44,10 +46,16 @@ MotionMaster::~MotionMaster()
     // clear ALL movement generators (including default)
     while (!empty())
     {
-        MovementGenerator *curr = top();
+        MovementGenerator* movement = top();
         pop();
-        if (curr && !IsStatic(curr))
-            delete curr;    // Skip finalizing on delete, it might launch new movement
+        if (movement && !IsStatic(movement))
+            delete movement;
+    }
+
+    while (!_expireList.empty())
+    {
+        delete _expireList.back();
+        _expireList.pop_back();
     }
 }
 
@@ -71,7 +79,7 @@ void MotionMaster::InitDefault()
     if (_owner->GetTypeId() == TYPEID_UNIT)
     {
         MovementGenerator* movement = FactorySelector::selectMovementGenerator(_owner->ToCreature());
-        Mutate(movement == NULL ? &si_idleMovement : movement, MOTION_SLOT_IDLE);
+        Mutate(movement == nullptr ? &si_idleMovement : movement, MOTION_SLOT_IDLE);
     }
     else
     {
@@ -84,19 +92,18 @@ void MotionMaster::UpdateMotion(uint32 diff)
     if (!_owner)
         return;
 
-    if (_owner->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED)) // what about UNIT_STATE_DISTRACTED? Why is this not included?
-        return;
-
     ASSERT(!empty());
 
     _cleanFlag |= MMCF_UPDATE;
-    bool isMoveGenUpdateSuccess = top()->Update(_owner, diff);
-    _cleanFlag &= ~MMCF_UPDATE;
-
-    if (!isMoveGenUpdateSuccess)
+    if (!top()->Update(_owner, diff))
+    {
+        _cleanFlag &= ~MMCF_UPDATE;
         MovementExpired();
+    }
+    else
+        _cleanFlag &= ~MMCF_UPDATE;
 
-    if (_expireList)
+    if (!_expireList.empty())
         ClearExpireList();
 }
 
@@ -116,14 +123,10 @@ void MotionMaster::Clear(bool reset /*= true*/)
 
 void MotionMaster::ClearExpireList()
 {
-    for (size_t i = 0; i < _expireList->size(); ++i)
-    {
-        MovementGenerator* mg = (*_expireList)[i];
-        DirectDelete(mg);
-    }
+    for (auto itr : _expireList)
+        DirectDelete(itr);
 
-    delete _expireList;
-    _expireList = nullptr;
+    _expireList.clear();
 
     if (empty())
         Initialize();
@@ -160,7 +163,7 @@ MovementGeneratorType MotionMaster::GetCurrentMovementGeneratorType() const
 MovementGeneratorType MotionMaster::GetMotionSlotType(int slot) const
 {
     if (!_slot[slot])
-        return NULL_MOTION_TYPE;
+        return MAX_MOTION_TYPE;
     else
         return _slot[slot]->GetMovementGeneratorType();
 }
@@ -171,12 +174,12 @@ MovementGenerator* MotionMaster::GetMotionSlot(int slot) const
     return _slot[slot];
 }
 
-void MotionMaster::propagateSpeedChange()
+void MotionMaster::PropagateSpeedChange()
 {
     for (int i = 0; i <= _top; ++i)
     {
         if (_slot[i])
-            _slot[i]->unitSpeedChanged();
+            _slot[i]->UnitSpeedChanged();
     }
 }
 
@@ -436,7 +439,7 @@ void MotionMaster::MoveKnockbackFrom(float srcX, float srcY, float speedXY, floa
     float dist = 2 * moveTimeHalf * speedXY;
     float max_height = -Movement::computeFallElevation(moveTimeHalf, false, -speedZ);
 
-    _owner->GetNearPoint(_owner, x, y, z, _owner->GetObjectSize(), dist, _owner->GetAngle(srcX, srcY) + float(M_PI));
+    _owner->GetNearPoint(_owner, x, y, z, _owner->GetCombatReach(), dist, _owner->GetAngle(srcX, srcY) + float(M_PI));
 
     Movement::MoveSplineInit init(_owner);
     init.MoveTo(x, y, z);
@@ -460,7 +463,7 @@ void MotionMaster::MoveJumpTo(float angle, float speedXY, float speedZ)
 
     float moveTimeHalf = speedZ / Movement::gravity;
     float dist = 2 * moveTimeHalf * speedXY;
-    _owner->GetClosePoint(x, y, z, _owner->GetObjectSize(), dist, angle);
+    _owner->GetClosePoint(x, y, z, _owner->GetCombatReach(), dist, angle);
     MoveJump(x, y, z, 0.0f, speedXY, speedZ);
 }
 
@@ -503,7 +506,7 @@ void MotionMaster::MoveJump(float x, float y, float z, float o, float speedXY, f
         arrivalSpellTargetGuid = arrivalCast->Target;
     }
 
-    Mutate(new EffectMovementGenerator(id, arrivalSpellId, arrivalSpellCasterGuid, arrivalSpellTargetGuid), MOTION_SLOT_CONTROLLED);
+    Mutate(new EffectMovementGenerator(id, arrivalSpellId, arrivalSpellTargetGuid), MOTION_SLOT_CONTROLLED);
 }
 
 void MotionMaster::MoveCirclePath(float x, float y, float z, float radius, bool clockwise, uint8 stepCount)
@@ -741,6 +744,15 @@ void MotionMaster::MoveBackward(uint32 id, float x, float y, float z, float spee
     Mutate(new EffectMovementGenerator(id), MOTION_SLOT_CONTROLLED);
 }
 
+void MotionMaster::MoveFormation(uint32 id, Position destination, uint32 moveType, bool forceRun /*= false*/, bool forceOrientation /*= false*/)
+{
+    if (_owner->GetTypeId() == TYPEID_UNIT)
+    {
+        TC_LOG_DEBUG("misc", "MotionMaster::MoveFormation: Creature (Entry: %u %s) targeted point (Id: %u X: %f Y: %f Z: %f).", _owner->GetEntry(), _owner->GetGUID().ToString().c_str(), id, destination.GetPositionX(), destination.GetPositionY(), destination.GetPositionZ());
+        Mutate(new FormationMovementGenerator(id, destination, moveType, forceRun, forceOrientation), MOTION_SLOT_ACTIVE);
+    }
+}
+
 /******************** Private methods ********************/
 
 void MotionMaster::pop()
@@ -867,7 +879,6 @@ void MotionMaster::DelayedDelete(MovementGenerator* curr)
     TC_LOG_FATAL("misc", "Unit (Entry %u) is trying to delete its updating Movement Generator (Type %u)!", _owner->GetEntry(), curr->GetMovementGeneratorType());
     if (IsStatic(curr))
         return;
-    if (!_expireList)
-        _expireList = new ExpireList();
-    _expireList->push_back(curr);
+
+    _expireList.push_back(curr);
 }

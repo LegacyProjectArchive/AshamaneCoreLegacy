@@ -410,7 +410,7 @@ class boss_algalon_the_observer : public CreatureScript
                 {
                     _firstPull = false;
                     Talk(SAY_ALGALON_START_TIMER);
-                    if (Creature* brann = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_BRANN_BRONZEBEARD_ALG)))
+                    if (Creature* brann = instance->GetCreature(DATA_BRANN_BRONZEBEARD_ALG))
                         brann->AI()->DoAction(ACTION_FINISH_INTRO);
 
                     me->setActive(true);
@@ -444,7 +444,7 @@ class boss_algalon_the_observer : public CreatureScript
                     me->SetDisableGravity(false);
                 else if (pointId == POINT_ALGALON_OUTRO)
                 {
-                    me->SetFacingTo(1.605703f, true);
+                    me->SetFacingTo(1.605703f);
                     events.ScheduleEvent(EVENT_OUTRO_3, 1200);
                     events.ScheduleEvent(EVENT_OUTRO_4, 2400);
                     events.ScheduleEvent(EVENT_OUTRO_5, 8500);
@@ -1358,7 +1358,7 @@ class spell_algalon_supermassive_fail : public SpellScriptLoader
                 if (!GetHitPlayer())
                     return;
 
-                GetHitPlayer()->ResetCriteria(CRITERIA_TYPE_BE_SPELL_TARGET, CRITERIA_CONDITION_NO_SPELL_HIT, GetSpellInfo()->Id, true);
+                GetHitPlayer()->ResetCriteria(CRITERIA_CONDITION_NO_SPELL_HIT, GetSpellInfo()->Id, true);
             }
 
             void Register() override
