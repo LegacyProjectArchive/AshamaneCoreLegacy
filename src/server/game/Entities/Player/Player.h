@@ -81,6 +81,7 @@ class Item;
 class LootStore;
 class OutdoorPvP;
 class Pet;
+class PetAura;
 class PlayerAI;
 class PlayerAchievementMgr;
 class PlayerMenu;
@@ -1188,6 +1189,11 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         Pet* SummonPet(uint32 entry, float x, float y, float z, float ang, PetType petType, uint32 despwtime);
         void RemovePet(Pet* pet, PetSaveMode mode, bool returnreagent = false);
 
+        // pet auras
+        std::unordered_set<PetAura const*> m_petAuras;
+        void AddPetAura(PetAura const* petSpell);
+        void RemovePetAura(PetAura const* petSpell);
+
         /// Handles said message in regular chat based on declared language and in config pre-defined Range.
         void Say(std::string const& text, Language language, WorldObject const* = nullptr) override;
         void Say(uint32 textId, WorldObject const* target = nullptr) override;
@@ -1263,7 +1269,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         InventoryResult CanBankItem(uint8 bag, uint8 slot, ItemPosCountVec& dest, Item* pItem, bool swap, bool not_loading = true, bool reagentBank = false) const;
         InventoryResult CanUseItem(Item* pItem, bool not_loading = true) const;
         bool HasItemTotemCategory(uint32 TotemCategory) const;
-        InventoryResult CanUseItem(ItemTemplate const* pItem) const;
+        InventoryResult CanUseItem(ItemTemplate const* pItem, bool skipRequiredLevelCheck = false) const;
         InventoryResult CanRollForItemInLFG(ItemTemplate const* item, WorldObject const* lootedObject) const;
         Item* StoreNewItem(ItemPosCountVec const& pos, uint32 itemId, bool update, ItemRandomEnchantmentId const& randomPropertyId = {}, GuidSet const& allowedLooters = GuidSet(), uint8 context = 0, std::vector<int32> const& bonusListIDs = std::vector<int32>(), bool addToCollection = true);
         Item* StoreItem(ItemPosCountVec const& pos, Item* pItem, bool update);
@@ -1421,7 +1427,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool CanAddQuest(Quest const* quest, bool msg) const;
         bool CanCompleteQuest(uint32 quest_id);
         bool CanCompleteRepeatableQuest(Quest const* quest);
-        bool CanRewardQuest(Quest const* quest, bool msg);
+        bool CanRewardQuest(Quest const* quest, bool msg) const;
         bool CanRewardQuest(Quest const* quest, uint32 reward, bool msg);
         void AddQuestAndCheckCompletion(Quest const* quest, Object* questGiver);
         void AddQuest(Quest const* quest, Object* questGiver);
@@ -1439,20 +1445,20 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool SatisfyQuestSkill(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestLevel(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestLog(bool msg) const;
-        bool SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg);
+        bool SatisfyQuestDependentQuests(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestDependentPreviousQuests(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestClass(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestRace(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestReputation(Quest const* qInfo, bool msg);
         bool SatisfyQuestStatus(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestConditions(Quest const* qInfo, bool msg);
         bool SatisfyQuestTimed(Quest const* qInfo, bool msg) const;
-        bool SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg);
-        bool SatisfyQuestNextChain(Quest const* qInfo, bool msg) const;
-        bool SatisfyQuestPrevChain(Quest const* qInfo, bool msg);
+        bool SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestDay(Quest const* qInfo, bool msg) const;
-        bool SatisfyQuestWeek(Quest const* qInfo, bool msg);
-        bool SatisfyQuestMonth(Quest const* qInfo, bool msg);
-        bool SatisfyQuestSeasonal(Quest const* qInfo, bool msg);
+        bool SatisfyQuestWeek(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestMonth(Quest const* qInfo, bool msg) const;
+        bool SatisfyQuestSeasonal(Quest const* qInfo, bool msg) const;
         bool GiveQuestSourceItem(Quest const* quest);
         bool TakeQuestSourceItem(uint32 questId, bool msg);
         bool GetQuestRewardStatus(uint32 quest_id) const;
@@ -1518,7 +1524,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         void SendQuestTimerFailed(uint32 questID) const;
         void SendCanTakeQuestResponse(QuestFailedReason reason, bool sendErrorMessage = true, std::string reasonText = "") const;
         void SendQuestConfirmAccept(Quest const* quest, Player* receiver) const;
-        void SendPushToPartyResponse(Player* player, QuestPushReason reason) const;
+        void SendPushToPartyResponse(Player const* player, QuestPushReason reason) const;
         void SendQuestUpdateAddCredit(Quest const* quest, ObjectGuid guid, QuestObjective const& obj, uint16 count) const;
         void SendQuestUpdateAddCreditSimple(QuestObjective const& obj) const;
         void SendQuestUpdateAddPlayer(Quest const* quest, uint16 newCount) const;
@@ -1551,7 +1557,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         /***                   LOAD SYSTEM                     ***/
         /*********************************************************/
 
-        bool LoadFromDB(ObjectGuid guid, SQLQueryHolder *holder);
+        bool LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder* holder);
         bool IsLoading() const override;
 
         static uint32 GetUInt32ValueFromArray(Tokenizer const& data, uint16 index);
@@ -1570,11 +1576,11 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         /*********************************************************/
 
         void SaveToDB(bool create = false);
-        void SaveInventoryAndGoldToDB(SQLTransaction& trans);                    // fast save function for item/money cheating preventing
-        void SaveGoldToDB(SQLTransaction& trans) const;
+        void SaveInventoryAndGoldToDB(CharacterDatabaseTransaction& trans);                    // fast save function for item/money cheating preventing
+        void SaveGoldToDB(CharacterDatabaseTransaction& trans) const;
 
         static void SetUInt32ValueInArray(Tokenizer& data, uint16 index, uint32 value);
-        static void SavePositionInDB(WorldLocation const& loc, uint16 zoneId, ObjectGuid guid, SQLTransaction& trans);
+        static void SavePositionInDB(WorldLocation const& loc, uint16 zoneId, ObjectGuid guid, CharacterDatabaseTransaction& trans);
 
         static void DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRealmChars = true, bool deleteFinally = false);
         static void DeleteOldCharacters();
@@ -1657,7 +1663,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         SpellInfo const* GetCastSpellInfo(SpellInfo const* spellInfo) const override;
         TrainerSpellState GetTrainerSpellState(TrainerSpell const* trainer_spell) const;
         bool IsSpellFitByClassAndRace(uint32 spell_id) const;
-        bool IsNeedCastPassiveSpellAtLearn(SpellInfo const* spellInfo) const;
+        bool HandlePassiveSpellLearn(SpellInfo const* spellInfo);
         bool IsCurrentSpecMasterySpell(SpellInfo const* spellInfo) const;
 
         void SendProficiency(ItemClass itemClass, uint32 itemSubclassMask) const;
@@ -1968,7 +1974,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         void SpawnCorpseBones(bool triggerSave = true);
         Corpse* CreateCorpse();
         void KillPlayer();
-        static void OfflineResurrect(ObjectGuid const& guid, SQLTransaction& trans);
+        static void OfflineResurrect(ObjectGuid const& guid, CharacterDatabaseTransaction& trans);
         bool HasCorpse() const { return _corpseLocation.GetMapId() != MAPID_INVALID; }
         WorldLocation GetCorpseLocation() const { return _corpseLocation; }
         void InitializeSelfResurrectionSpells();
@@ -2126,6 +2132,8 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         void ApplyItemObtainSpells(Item* item, bool apply);
         void ApplyItemDependentAuras(Item* item, bool apply);
 
+        bool CheckAttackFitToAuraRequirement(WeaponAttackType attackType, AuraEffect const* aurEff) const override;
+
         void _ApplyItemMods(Item* item, uint8 slot, bool apply, bool updateItemAuras = true);
         void _RemoveAllItemMods();
         void _ApplyAllItemMods();
@@ -2233,7 +2241,6 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         /*********************************************************/
 
         void UpdateSpeakTime();
-        bool CanSpeak() const;
 
         /*********************************************************/
         /***                 VARIOUS SYSTEMS                   ***/
@@ -2408,7 +2415,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         uint32 GetAchievementPoints() const;
         bool HasAchieved(uint32 achievementId) const;
         void ResetAchievements();
-        void ResetCriteria(CriteriaTypes type, uint64 miscValue1 = 0, uint64 miscValue2 = 0, bool evenIfCriteriaComplete = false);
+        void ResetCriteria(CriteriaCondition condition, int32 failAsset, bool evenIfCriteriaComplete = false);
         void UpdateCriteria(CriteriaTypes type, uint64 miscValue1 = 0, uint64 miscValue2 = 0, uint64 miscValue3 = 0, Unit* unit = NULL);
         void StartCriteriaTimer(CriteriaTimedTypes type, uint32 entry, uint32 timeLost = 0);
         void RemoveCriteriaTimer(CriteriaTimedTypes type, uint32 entry);
@@ -2615,27 +2622,26 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         /***                   SAVE SYSTEM                     ***/
         /*********************************************************/
 
-        void _SaveActions(SQLTransaction& trans);
-        void _SaveAuras(SQLTransaction& trans);
-        void _SaveInventory(SQLTransaction& trans);
-        void _SaveVoidStorage(SQLTransaction& trans);
-        void _SaveMail(SQLTransaction& trans);
-        void _SaveQuestStatus(SQLTransaction& trans);
-        void _SaveDailyQuestStatus(SQLTransaction& trans);
-        void _SaveWeeklyQuestStatus(SQLTransaction& trans);
-        void _SaveMonthlyQuestStatus(SQLTransaction& trans);
-        void _SaveSeasonalQuestStatus(SQLTransaction& trans);
-        void _SaveSkills(SQLTransaction& trans);
-        void _SaveSpells(SQLTransaction& trans);
-        void _SaveEquipmentSets(SQLTransaction& trans);
-        void _SaveArenaData(SQLTransaction& trans);
-        void _SaveBGData(SQLTransaction& trans);
-        void _SaveGlyphs(SQLTransaction& trans) const;
-        void _SaveTalents(SQLTransaction& trans);
-        void _SaveStats(SQLTransaction& trans) const;
-        void _SaveInstanceTimeRestrictions(SQLTransaction& trans);
-        void _SaveCurrency(SQLTransaction& trans);
-        void _SaveCUFProfiles(SQLTransaction& trans);
+        void _SaveActions(CharacterDatabaseTransaction& trans);
+        void _SaveAuras(CharacterDatabaseTransaction& trans);
+        void _SaveInventory(CharacterDatabaseTransaction& trans);
+        void _SaveVoidStorage(CharacterDatabaseTransaction& trans);
+        void _SaveMail(CharacterDatabaseTransaction& trans);
+        void _SaveQuestStatus(CharacterDatabaseTransaction& trans);
+        void _SaveDailyQuestStatus(CharacterDatabaseTransaction& trans);
+        void _SaveWeeklyQuestStatus(CharacterDatabaseTransaction& trans);
+        void _SaveMonthlyQuestStatus(CharacterDatabaseTransaction& trans);
+        void _SaveSeasonalQuestStatus(CharacterDatabaseTransaction& trans);
+        void _SaveSkills(CharacterDatabaseTransaction& trans);
+        void _SaveSpells(CharacterDatabaseTransaction& trans);
+        void _SaveEquipmentSets(CharacterDatabaseTransaction& trans);
+        void _SaveBGData(CharacterDatabaseTransaction& trans);
+        void _SaveGlyphs(CharacterDatabaseTransaction& trans) const;
+        void _SaveTalents(CharacterDatabaseTransaction& trans);
+        void _SaveStats(CharacterDatabaseTransaction& trans) const;
+        void _SaveInstanceTimeRestrictions(CharacterDatabaseTransaction& trans);
+        void _SaveCurrency(CharacterDatabaseTransaction& trans);
+        void _SaveCUFProfiles(CharacterDatabaseTransaction& trans);
 
         /*********************************************************/
         /***              ENVIRONMENTAL SYSTEM                 ***/
@@ -2803,7 +2809,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         InventoryResult CanStoreItem_InBag(uint8 bag, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool merge, bool non_specialized, Item* pSrcItem, uint8 skip_bag, uint8 skip_slot) const;
         InventoryResult CanStoreItem_InInventorySlots(uint8 slot_begin, uint8 slot_end, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool merge, Item* pSrcItem, uint8 skip_bag, uint8 skip_slot) const;
         Item* _StoreItem(uint16 pos, Item* pItem, uint32 count, bool clone, bool update);
-        Item* _LoadItem(SQLTransaction& trans, uint32 zoneId, uint32 timeDiff, Field* fields);
+        Item* _LoadItem(CharacterDatabaseTransaction& trans, uint32 zoneId, uint32 timeDiff, Field* fields);
 
         CinematicMgr* _cinematicMgr;
 

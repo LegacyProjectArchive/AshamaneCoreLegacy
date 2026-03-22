@@ -28,6 +28,7 @@
 #include "DatabaseEnv.h"
 #include "DisableMgr.h"
 #include "DynamicObject.h"
+#include "GameObjectAI.h"
 #include "GridNotifiersImpl.h"
 #include "Guild.h"
 #include "Group.h"
@@ -644,6 +645,7 @@ m_spellValue(new SpellValue(caster->GetMap()->GetDifficultyID(), m_spellInfo)), 
     m_casttime = 0;                                         // setup to correct value in Spell::prepare, must not be used before.
     m_timer = 0;                                            // will set to castime in prepare
     m_channeledDuration = 0;                                // will be setup in Spell::handle_immediate
+    m_launchHandled = false;
     m_immediateHandled = false;
 
     m_channelTargetEffectMask = 0;
@@ -858,11 +860,11 @@ void Spell::SelectSpellTargets()
         }
     }
 
-    if (uint64 dstDelay = CalculateDelayMomentForDst())
+    if (uint64 dstDelay = CalculateDelayMomentForDst(m_spellInfo->LaunchDelay))
         m_delayMoment = dstDelay;
 }
 
-uint64 Spell::CalculateDelayMomentForDst() const
+uint64 Spell::CalculateDelayMomentForDst(float launchDelay) const
 {
     if (m_targets.HasDst())
     {
@@ -870,17 +872,18 @@ uint64 Spell::CalculateDelayMomentForDst() const
         {
             float speed = m_targets.GetSpeedXY();
             if (speed > 0.0f)
-                return (uint64)floor((m_targets.GetDist2d() / speed * 1000.0f) + (m_spellInfo->LaunchDelay * 1000.0f));
+                return uint64(std::floor((m_targets.GetDist2d() / speed + launchDelay) * 1000.0f));
         }
+        else if (m_spellInfo->HasAttribute(SPELL_ATTR9_SPECIAL_DELAY_CALCULATION))
+            return uint64(std::floor((m_spellInfo->Speed + launchDelay) * 1000.0f));
         else if (m_spellInfo->Speed > 0.0f)
         {
             // We should not subtract caster size from dist calculation (fixes execution time desync with animation on client, eg. Malleable Goo cast by PP)
             float dist = m_caster->GetExactDist(*m_targets.GetDstPos());
-            if (!m_spellInfo->HasAttribute(SPELL_ATTR9_SPECIAL_DELAY_CALCULATION))
-                return (uint64)floor(std::floor(dist / m_spellInfo->Speed * 1000.0f) + (m_spellInfo->LaunchDelay * 1000.0f));
-            else
-                return (uint64)floor((m_spellInfo->Speed * 1000.0f) + (m_spellInfo->LaunchDelay * 1000.0f));
+            return uint64(std::floor((dist / m_spellInfo->Speed + launchDelay) * 1000.0f));
         }
+
+        return uint64(std::floor(launchDelay * 1000.0f));
     }
 
     return 0;
@@ -888,7 +891,7 @@ uint64 Spell::CalculateDelayMomentForDst() const
 
 void Spell::RecalculateDelayMomentForDst()
 {
-    m_delayMoment = CalculateDelayMomentForDst();
+    m_delayMoment = CalculateDelayMomentForDst(0.0f);
     m_caster->m_Events.ModifyEventTime(_spellEvent, GetDelayStart() + m_delayMoment);
 }
 
@@ -1346,6 +1349,12 @@ void Spell::SelectImplicitAreaTargets(SpellEffIndex effIndex, SpellImplicitTarge
         return;
     float radius = effect->CalcRadius(m_caster) * m_spellValue->RadiusMod;
 
+    // if this is a proximity based aoe (Frost Nova, Psychic Scream, ...), include the caster's own combat reach
+    if (targetType.IsProximityBasedAoe())
+        radius += GetCaster()->GetCombatReach();
+
+    SearchAreaTargets(targets, radius, center, referer, targetType.GetObjectType(), targetType.GetCheckType(), effect->ImplicitTargetConditions);
+
     if (targetType.GetTarget() == TARGET_UNIT_CASTER_PET)
     {
         targets.push_back(referer);
@@ -1410,7 +1419,7 @@ void Spell::SelectImplicitCasterDestTargets(SpellEffIndex effIndex, SpellImplici
             float dist = frand(minDist, maxDist);
             float x, y, z;
             float angle = float(rand_norm()) * static_cast<float>(M_PI * 35.0f / 180.0f) - static_cast<float>(M_PI * 17.5f / 180.0f);
-            m_caster->GetClosePoint(x, y, z, DEFAULT_WORLD_OBJECT_SIZE, dist, angle);
+            m_caster->GetClosePoint(x, y, z, DEFAULT_PLAYER_BOUNDING_RADIUS, dist, angle);
 
             float ground = m_caster->GetMap()->GetHeight(m_caster->GetPhaseShift(), x, y, z, true, 50.0f);
             float liquidLevel = VMAP_INVALID_HEIGHT_VALUE;
@@ -1443,7 +1452,7 @@ void Spell::SelectImplicitCasterDestTargets(SpellEffIndex effIndex, SpellImplici
             {
                 float dist = effect->CalcRadius(m_caster);
                 float angle = targetType.CalcDirectionAngle();
-                float objSize = m_caster->GetObjectSize();
+                float objSize = m_caster->GetCombatReach();
 
                 switch (targetType.GetTarget())
                 {
@@ -1501,7 +1510,7 @@ void Spell::SelectImplicitTargetDestTargets(SpellEffIndex effIndex, SpellImplici
             if (SpellEffectInfo const* effect = GetEffect(effIndex))
             {
                 float angle = targetType.CalcDirectionAngle();
-                float objSize = target->GetObjectSize();
+                float objSize = target->GetCombatReach();
                 float dist = effect->CalcRadius(m_caster);
                 if (dist < objSize)
                     dist = objSize;
@@ -1748,7 +1757,7 @@ void Spell::SelectImplicitTrajTargets(SpellEffIndex effIndex, SpellImplicitTarge
             }
         }
 
-        const float size = std::max((*itr)->GetObjectSize(), 1.0f);
+        const float size = std::max((*itr)->GetCombatReach(), 1.0f);
         const float objDist2d = srcPos.GetExactDist2d(*itr);
         const float dz = (*itr)->GetPositionZ() - srcPos.m_positionZ;
 
@@ -2231,19 +2240,20 @@ void Spell::AddUnitTarget(Unit* target, uint32 effectMask, bool checkIfValid /*=
 
     // Spell have speed - need calculate incoming time
     // Incoming time is zero for self casts. At least I think so.
-    if (m_spellInfo->Speed > 0.0f && m_caster != target)
+    if (m_caster != target)
     {
-        // calculate spell incoming interval
-        /// @todo this is a hack
-        float dist = m_caster->GetDistance(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+        float hitDelay = m_spellInfo->LaunchDelay;
+        if (m_spellInfo->HasAttribute(SPELL_ATTR9_SPECIAL_DELAY_CALCULATION))
+            hitDelay += m_spellInfo->Speed;
+        else if (m_spellInfo->Speed > 0.0f)
+        {
+            // calculate spell incoming interval
+            /// @todo this is a hack
+            float dist = std::max(m_caster->GetDistance(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ()), 5.0f);
+            hitDelay += dist / m_spellInfo->Speed;
+        }
 
-        if (dist < 5.0f)
-            dist = 5.0f;
-
-        if (!m_spellInfo->HasAttribute(SPELL_ATTR9_SPECIAL_DELAY_CALCULATION))
-            targetInfo.timeDelay = uint64(std::floor(dist / m_spellInfo->Speed * 1000.0f) + (m_spellInfo->LaunchDelay * 1000.0f));
-        else
-            targetInfo.timeDelay = uint64((m_spellInfo->Speed * 1000.0f) + (m_spellInfo->LaunchDelay * 1000.0f));
+        targetInfo.timeDelay = uint64(std::floor(hitDelay * 1000.0f));
     }
     else
         targetInfo.timeDelay = 0ULL;
@@ -2304,23 +2314,26 @@ void Spell::AddGOTarget(GameObject* go, uint32 effectMask)
     target.processed  = false;                              // Effects not apply on target
 
     // Spell have speed - need calculate incoming time
-    if (m_spellInfo->Speed > 0.0f)
+    if (static_cast<WorldObject*>(m_caster) != go)
     {
-        // calculate spell incoming interval
-        float dist = m_caster->GetDistance(go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
-        if (dist < 5.0f)
-            dist = 5.0f;
+        float hitDelay = m_spellInfo->LaunchDelay;
+        if (m_spellInfo->HasAttribute(SPELL_ATTR9_SPECIAL_DELAY_CALCULATION))
+            hitDelay += m_spellInfo->Speed;
+        else if (m_spellInfo->Speed > 0.0f)
+        {
+            // calculate spell incoming interval
+            float dist = std::max(m_caster->GetDistance(go->GetPositionX(), go->GetPositionY(), go->GetPositionZ()), 5.0f);
+            hitDelay += dist / m_spellInfo->Speed;
+        }
 
-        if (!m_spellInfo->HasAttribute(SPELL_ATTR9_SPECIAL_DELAY_CALCULATION))
-            target.timeDelay = uint64(floor(dist / m_spellInfo->Speed * 1000.0f) + (m_spellInfo->LaunchDelay * 1000.0f));
-        else
-            target.timeDelay = uint64((m_spellInfo->Speed * 1000.0f) + (m_spellInfo->LaunchDelay * 1000.0f));
-
-        if (!m_delayMoment || m_delayMoment > target.timeDelay)
-            m_delayMoment = target.timeDelay;
+        target.timeDelay = uint64(std::floor(hitDelay * 1000.0f));
     }
     else
-        target.timeDelay = 0LL;
+        target.timeDelay = 0ULL;
+
+    // Calculate minimum incoming time
+    if (target.timeDelay && (!m_delayMoment || m_delayMoment > target.timeDelay))
+        m_delayMoment = target.timeDelay;
 
     // Add target to list
     m_UniqueGOTargetInfo.push_back(target);
@@ -2405,7 +2418,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
     if (unit->IsAlive() != target->alive)
         return;
 
-    if (getState() == SPELL_STATE_DELAYED && !m_spellInfo->IsPositive() && (getMSTime() - target->timeDelay) <= unit->m_lastSanctuaryTime)
+    if (getState() == SPELL_STATE_DELAYED && !m_spellInfo->IsPositive() && (GameTime::GetGameTimeMS() - target->timeDelay) <= unit->m_lastSanctuaryTime)
         return;                                             // No missinfo in that case
 
     // Get original caster (if exist) and calculate damage/healing from him data
@@ -2675,7 +2688,7 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
         return SPELL_MISS_EVADE;
 
     // For delayed spells immunity may be applied between missile launch and hit - check immunity for that case
-    if (m_spellInfo->Speed && unit->IsImmunedToSpell(m_spellInfo, m_caster))
+    if (m_spellInfo->HasHitDelay() && unit->IsImmunedToSpell(m_spellInfo, m_caster))
         return SPELL_MISS_IMMUNE;
 
     // disable effects to which unit is immune
@@ -2704,7 +2717,7 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
     if (m_caster != unit)
     {
         // Recheck  UNIT_FLAG_NON_ATTACKABLE for delayed spells
-        if (m_spellInfo->Speed > 0.0f && unit->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE) && unit->GetCharmerOrOwnerGUID() != m_caster->GetGUID())
+        if (m_spellInfo->HasHitDelay() && unit->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE) && unit->GetCharmerOrOwnerGUID() != m_caster->GetGUID())
             return SPELL_MISS_EVADE;
 
         if (m_caster->_IsValidAttackTarget(unit, m_spellInfo))
@@ -2714,7 +2727,7 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
             // for delayed spells ignore negative spells (after duel end) for friendly targets
             /// @todo this cause soul transfer bugged
             // 63881 - Malady of the Mind jump spell (Yogg-Saron)
-            if (m_spellInfo->Speed > 0.0f && unit->GetTypeId() == TYPEID_PLAYER && !m_spellInfo->IsPositive() && m_spellInfo->Id != 63881)
+            if (m_spellInfo->HasHitDelay() && unit->GetTypeId() == TYPEID_PLAYER && !m_spellInfo->IsPositive() && m_spellInfo->Id != 63881)
                 return SPELL_MISS_EVADE;
 
             // assisting case, healing and resurrection
@@ -2795,11 +2808,25 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
                 }
 
                 // Now Reduce spell duration using data received at spell hit
+                // check whatever effects we're going to apply, diminishing returns only apply to negative aura effects
+                bool positive = true;
+                if (m_originalCaster == unit || !m_originalCaster->IsFriendlyTo(unit))
+                {
+                    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                    {
+                        if ((effectMask & (1 << i)) && !m_spellInfo->IsPositiveEffect(i))
+                        {
+                            positive = false;
+                            break;
+                        }
+                    }
+                }
+
                 int32 duration = m_spellAura->GetMaxDuration();
                 float diminishMod = unit->ApplyDiminishingToDuration(aurSpellInfo, duration, m_originalCaster, diminishLevel);
 
                 // unit is immune to aura if it was diminished to 0 duration
-                if (diminishMod == 0.0f)
+                if (!positive && !unit->ApplyDiminishingToDuration(m_spellInfo, duration, m_originalCaster, diminishLevel))
                 {
                     m_spellAura->Remove();
                     bool found = false;
@@ -2811,11 +2838,7 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
                 }
                 else
                 {
-                    ((UnitAura*)m_spellAura)->SetDiminishGroup(diminishGroup);
-
-                    bool positive = m_spellAura->GetSpellInfo()->IsPositive();
-                    if (AuraApplication* aurApp = m_spellAura->GetApplicationOfTarget(m_originalCaster->GetGUID()))
-                        positive = aurApp->IsPositive();
+                    static_cast<UnitAura*>(m_spellAura)->SetDiminishGroup(diminishGroup);
 
                     duration = m_originalCaster->ModSpellDuration(aurSpellInfo, unit, duration, positive, effectMask);
 
@@ -2927,6 +2950,9 @@ void Spell::DoAllEffectOnTarget(GOTargetInfo* target)
     for (SpellEffectInfo const* effect : GetEffects())
         if (effect && (effectMask & (1 << effect->EffectIndex)))
             HandleEffects(NULL, NULL, go, effect->EffectIndex, SPELL_EFFECT_HANDLE_HIT_TARGET);
+
+    if (go->AI())
+        go->AI()->SpellHit(m_caster, m_spellInfo);
 
     CallScriptOnHitHandlers();
     CallScriptAfterHitHandlers();
@@ -3087,15 +3113,9 @@ bool Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
     }
     LoadScripts();
 
-    CallScriptOnPrepareHandlers();
-
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, true);
     // Fill cost data (do not use power for item casts)
-    if (!m_CastItem)
-        m_powerCost = m_spellInfo->CalcPowerCost(m_caster, m_spellSchoolMask);
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+    if (m_CastItem)
+        m_powerCost = m_spellInfo->CalcPowerCost(m_caster, m_spellSchoolMask, this);
 
     // Set combo point requirement
     if ((_triggeredCastFlags & TRIGGERED_IGNORE_COMBO_POINTS) || m_CastItem || !m_caster->m_playerMovingMe)
@@ -3119,11 +3139,6 @@ bool Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
             triggeredByAura->GetBase()->SetDuration(0);
         }
 
-        // cleanup after mod system
-        // triggered spell pointer can be not removed in some cases
-        if (m_caster->GetTypeId() == TYPEID_PLAYER)
-            m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
-
         if (param1 || param2)
             SendCastResult(result, &param1, &param2);
         else
@@ -3140,10 +3155,8 @@ bool Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
     {
         if (!player->GetCommandStatus(CHEAT_CASTTIME))
         {
-            player->SetSpellModTakingSpell(this, true);
             // calculate cast time (calculated after first CheckCast check to prevent charge counting for first CheckCast fail)
             m_casttime = m_spellInfo->CalcCastTime(player->getLevel(), this);
-            player->SetSpellModTakingSpell(this, false);
         }
         else
             m_casttime = 0; // Set cast time to 0 if .cheat casttime is enabled.
@@ -3154,15 +3167,6 @@ bool Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
     CallScriptOnCalcCastTimeHandlers();
 
     m_casttime *= m_caster->GetTotalAuraMultiplier(SPELL_AURA_MOD_CASTING_SPEED);
-
-    if (m_caster->GetTypeId() == TYPEID_UNIT && !m_caster->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)) // _UNIT actually means creature. for some reason.
-        if (!(m_spellInfo->IsNextMeleeSwingSpell() || IsAutoRepeat() || (_triggeredCastFlags & TRIGGERED_IGNORE_SET_FACING)))
-        {
-            if (m_targets.GetObjectTarget() && m_caster != m_targets.GetObjectTarget())
-                m_caster->ToCreature()->FocusTarget(this, m_targets.GetObjectTarget());
-            else if (!m_spellInfo->CasterCanTurnDuringCast())
-                m_caster->ToCreature()->FocusTarget(this, nullptr);
-        }
 
     // don't allow channeled spells / spells with cast time to be cast while moving
     // exception are only channeled spells that have no casttime and SPELL_ATTR5_CAN_CHANNEL_WHEN_MOVING
@@ -3177,6 +3181,18 @@ bool Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
             SendCastResult(SPELL_FAILED_MOVING);
             finish(false);
             return false;
+        }
+    }
+
+    // focus if not controlled creature
+    if (m_caster->GetTypeId() == TYPEID_UNIT && !m_caster->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
+    {
+        if (!(m_spellInfo->IsNextMeleeSwingSpell() || IsAutoRepeat() || (_triggeredCastFlags & TRIGGERED_IGNORE_SET_FACING)))
+        {
+            if (m_targets.GetObjectTarget() && m_caster != m_targets.GetObjectTarget())
+                m_caster->ToCreature()->FocusTarget(this, m_targets.GetObjectTarget());
+            else if (m_spellInfo->HasAttribute(SPELL_ATTR5_DONT_TURN_DURING_CAST))
+                m_caster->ToCreature()->FocusTarget(this, nullptr);
         }
     }
 
@@ -3275,6 +3291,23 @@ void Spell::cancel()
 
 void Spell::cast(bool skipCheck)
 {
+    Player* modOwner = m_caster->GetSpellModOwner();
+    Spell* lastSpellMod = nullptr;
+    if (modOwner)
+    {
+        lastSpellMod = modOwner->m_spellModTakingSpell;
+        if (lastSpellMod)
+            modOwner->SetSpellModTakingSpell(lastSpellMod, false);
+    }
+
+    _cast(skipCheck);
+
+    if (lastSpellMod)
+        modOwner->SetSpellModTakingSpell(lastSpellMod, true);
+}
+
+void Spell::_cast(bool skipCheck)
+{
     // update pointers base at GUIDs to prevent access to non-existed already object
     if (!UpdatePointers())
     {
@@ -3312,11 +3345,12 @@ void Spell::cast(bool skipCheck)
             m_caster->SetInFront(m_targets.GetObjectTarget());
 
     // Should this be done for original caster?
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
+    Player* modOwner = m_caster->GetSpellModOwner();
+    if (modOwner)
     {
         // Set spell which will drop charges for triggered cast spells
         // if not successfully cast, will be remove in finish(false)
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, true);
+        modOwner->SetSpellModTakingSpell(this, true);
     }
 
     CallScriptBeforeCastHandlers();
@@ -3331,10 +3365,8 @@ void Spell::cast(bool skipCheck)
             SendCastResult(castResult, &param1, &param2);
             SendInterrupted(0);
 
-            // cleanup after mod system
-            // triggered spell pointer can be not removed in some cases
-            if (m_caster->GetTypeId() == TYPEID_PLAYER)
-                m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+            if (modOwner)
+                modOwner->SetSpellModTakingSpell(this, false);
 
             finish(false);
             SetExecutedCurrently(false);
@@ -3345,9 +3377,9 @@ void Spell::cast(bool skipCheck)
         // if trade not complete then remember it in trade data
         if (m_targets.GetTargetMask() & TARGET_FLAG_TRADE_ITEM)
         {
-            if (m_caster->GetTypeId() == TYPEID_PLAYER)
+            if (modOwner)
             {
-                if (TradeData* my_trade = m_caster->ToPlayer()->GetTradeData())
+                if (TradeData* my_trade = modOwner->GetTradeData())
                 {
                     if (!my_trade->IsInAcceptProcess())
                     {
@@ -3356,9 +3388,7 @@ void Spell::cast(bool skipCheck)
                         SendCastResult(SPELL_FAILED_DONT_REPORT);
                         SendInterrupted(0);
 
-                        // cleanup after mod system
-                        // triggered spell pointer can be not removed in some cases
-                        m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+                        modOwner->SetSpellModTakingSpell(this, false);
 
                         finish(false);
                         SetExecutedCurrently(false);
@@ -3434,13 +3464,17 @@ void Spell::cast(bool skipCheck)
 
     PrepareScriptHitHandlers();
 
-    HandleLaunchPhase();
+    if (!m_spellInfo->LaunchDelay)
+    {
+        HandleLaunchPhase();
+        m_launchHandled = true;
+    }
 
     // we must send smsg_spell_go packet before m_castItem delete in TakeCastItem()...
     SendSpellGo();
 
     // Okay, everything is prepared. Now we need to distinguish between immediate and evented delayed spells
-    if ((m_spellInfo->Speed > 0.0f && !m_spellInfo->IsChanneled()) || m_spellInfo->HasAttribute(SPELL_ATTR4_UNK4))
+    if ((m_spellInfo->HasHitDelay() && !m_spellInfo->IsChanneled()) || m_spellInfo->HasAttribute(SPELL_ATTR4_UNK4))
     {
         // Remove used for cast item if need (it can be already NULL after TakeReagents call
         // in case delayed spell remove item at cast delay start
@@ -3477,12 +3511,12 @@ void Spell::cast(bool skipCheck)
                 m_caster->CastSpell(m_targets.GetUnitTarget() ? m_targets.GetUnitTarget() : m_caster, *i, true);
     }
 
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
+    if (modOwner)
     {
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+        modOwner->SetSpellModTakingSpell(this, false);
 
         //Clear spell cooldowns after every spell is cast if .cheat cooldown is enabled.
-        if (m_caster->ToPlayer()->GetCommandStatus(CHEAT_COOLDOWN))
+        if (modOwner->GetCommandStatus(CHEAT_COOLDOWN))
         {
             m_caster->GetSpellHistory()->ResetCooldown(m_spellInfo->Id, true);
             m_caster->GetSpellHistory()->RestoreCharge(m_spellInfo->ChargeCategoryId);
@@ -3490,9 +3524,6 @@ void Spell::cast(bool skipCheck)
     }
 
     SetExecutedCurrently(false);
-
-    if (Creature* creatureCaster = m_caster->ToCreature())
-        creatureCaster->ReleaseFocus(this);
 
     if (!m_originalCaster)
         return;
@@ -3586,20 +3617,44 @@ uint64 Spell::handle_delayed(uint64 t_offset)
         return 0;
     }
 
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, true);
-
+    bool single_missile = m_targets.HasDst();
     uint64 next_time = 0;
+
+    if (!m_launchHandled)
+    {
+        uint64 launchMoment = uint64(std::floor(m_spellInfo->LaunchDelay * 1000.0f));
+        if (launchMoment > t_offset)
+            return launchMoment;
+
+        HandleLaunchPhase();
+        m_launchHandled = true;
+        if (m_delayMoment > t_offset)
+        {
+            if (single_missile)
+                return m_delayMoment;
+
+            next_time = m_delayMoment;
+            if ((m_UniqueTargetInfo.size() > 2 || (m_UniqueTargetInfo.size() == 1 && m_UniqueTargetInfo.front().targetGUID == m_caster->GetGUID())) || !m_UniqueGOTargetInfo.empty())
+            {
+                t_offset = 0; // if LaunchDelay was present then the only target that has timeDelay = 0 is m_caster - and that is the only target we want to process now
+            }
+        }
+    }
+
+    if (single_missile && !t_offset)
+        return m_delayMoment;
+
+    Player* modOwner = m_caster->GetSpellModOwner();
+    if (modOwner)
+        modOwner->SetSpellModTakingSpell(this, true);
 
     PrepareTargetProcessing();
 
-    if (!m_immediateHandled)
+    if (!m_immediateHandled && t_offset)
     {
         _handle_immediate_phase();
         m_immediateHandled = true;
     }
-
-    bool single_missile = (m_targets.HasDst() && !m_spellInfo->IsTargetingLine());
 
     // now recheck units targeting correctness (need before any effects apply to prevent adding immunity at first effect not allow apply second spell effect and similar cases)
     for (std::vector<TargetInfo>::iterator ihit = m_UniqueTargetInfo.begin(); ihit != m_UniqueTargetInfo.end(); ++ihit)
@@ -3630,8 +3685,8 @@ uint64 Spell::handle_delayed(uint64 t_offset)
 
     FinishTargetProcessing();
 
-    if (m_caster->GetTypeId() == TYPEID_PLAYER)
-        m_caster->ToPlayer()->SetSpellModTakingSpell(this, false);
+    if (modOwner)
+        modOwner->SetSpellModTakingSpell(this, false);
 
     // All targets passed - need finish phase
     if (next_time == 0)
@@ -4134,6 +4189,23 @@ void Spell::SendCastResult(Player* caster, SpellInfo const* spellInfo, uint32 sp
     caster->GetSession()->SendPacket(packet.Write());
 }
 
+void Spell::SendMountResult(MountResult result)
+{
+    if (result == MountResult::Ok)
+        return;
+
+    if (!m_caster->IsPlayer())
+        return;
+
+    Player* caster = m_caster->ToPlayer();
+    if (caster->IsLoading())  // don't send mount results at loading time
+        return;
+
+    WorldPackets::Spells::MountResult packet;
+    packet.Result = AsUnderlyingType(result);
+    caster->SendDirectMessage(packet.Write());
+}
+
 void Spell::SendSpellStart()
 {
     if (!IsNeedSendToClient())
@@ -4619,7 +4691,15 @@ void Spell::SendChannelStart(uint32 duration)
 
     m_timer = duration;
     for (TargetInfo const& target : m_UniqueTargetInfo)
+    {
         m_caster->AddChannelObject(target.targetGUID);
+
+        if (m_UniqueTargetInfo.size() == 1 && m_UniqueGOTargetInfo.empty())
+            if(target.targetGUID != m_caster->GetGUID())
+                if (Creature* creatureCaster = m_caster->ToCreature())
+                    if (!creatureCaster->IsFocusing(this))
+                        creatureCaster->FocusTarget(this, ObjectAccessor::GetWorldObject(*creatureCaster, target.targetGUID));
+    }
 
     for (GOTargetInfo const& target : m_UniqueGOTargetInfo)
         m_caster->AddChannelObject(target.targetGUID);
@@ -5151,7 +5231,7 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* param1 /*= nullptr*/, uint
     if (Unit* target = m_targets.GetUnitTarget())
     {
         // do not allow to cast on hostile targets in sanctuary
-        if (!m_caster->IsFriendlyTo(target))
+        if (!m_caster->IsFriendlyTo(target) && !m_targets.GetUnitTarget()->ToCreature())
         {
             if (m_caster->IsInSanctuary() || target->IsInSanctuary())
             {
@@ -5495,13 +5575,13 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* param1 /*= nullptr*/, uint
                     if (!target->IsWithinLOSInMap(m_caster)) //Do full LoS/Path check. Don't exclude m2
                         return SPELL_FAILED_LINE_OF_SIGHT;
 
-                    float objSize = target->GetObjectSize();
+                    float objSize = target->GetCombatReach();
                     float range = m_spellInfo->GetMaxRange(true, m_caster, this) * 1.5f + objSize; // can't be overly strict
 
                     m_preGeneratedPath = Trinity::make_unique<PathGenerator>(m_caster);
                     m_preGeneratedPath->SetPathLengthLimit(range);
                     // first try with raycast, if it fails fall back to normal path
-                    float targetObjectSize = std::min(target->GetObjectSize(), 4.0f);
+                    float targetObjectSize = std::min(target->GetCombatReach(), 4.0f);
                     bool result = m_preGeneratedPath->CalculatePath(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ() + targetObjectSize, false, true);
                     if (m_preGeneratedPath->GetPathType() & PATHFIND_SHORT)
                         return SPELL_FAILED_OUT_OF_RANGE;
@@ -5902,7 +5982,10 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* param1 /*= nullptr*/, uint
                     return SPELL_FAILED_NO_MOUNTS_ALLOWED;
 
                 if (m_caster->IsInDisallowedMountForm())
-                    return SPELL_FAILED_NOT_SHAPESHIFT;
+                {
+                    SendMountResult(MountResult::Shapeshifted); // mount result gets sent before the cast result
+                    return SPELL_FAILED_DONT_REPORT;
+                }
 
                 break;
             }
@@ -6645,25 +6728,31 @@ SpellCastResult Spell::CheckItems(uint32* param1 /*= nullptr*/, uint32* param2 /
             case SPELL_EFFECT_CREATE_ITEM:
             case SPELL_EFFECT_CREATE_LOOT:
             {
-                if (!IsTriggered() && effect->ItemType)
+                // m_targets.GetUnitTarget() means explicit cast, otherwise we dont check for possible equip error
+                Unit* target = m_targets.GetUnitTarget() ? m_targets.GetUnitTarget() : m_caster;
+                if (target && target->GetTypeId() == TYPEID_PLAYER && !IsTriggered() && effect->ItemType)
                 {
                     ItemPosCountVec dest;
-                    InventoryResult msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, effect->ItemType, 1);
+
+                    InventoryResult msg = target->ToPlayer()->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, effect->ItemType, 1);
                     if (msg != EQUIP_ERR_OK)
                     {
                         ItemTemplate const* pProto = sObjectMgr->GetItemTemplate(effect->ItemType);
                         /// @todo Needs review
                         if (pProto && !(pProto->GetItemLimitCategory()))
                         {
-                            player->SendEquipError(msg, NULL, NULL, effect->ItemType);
+                            player->SendEquipError(msg, nullptr, nullptr, effect->ItemType);
                             return SPELL_FAILED_DONT_REPORT;
                         }
                         else
                         {
                             if (!(m_spellInfo->SpellFamilyName == SPELLFAMILY_MAGE && (m_spellInfo->SpellFamilyFlags[0] & 0x40000000)))
                                 return SPELL_FAILED_TOO_MANY_OF_ITEM;
-                            else if (!(player->HasItemCount(effect->ItemType)))
-                                return SPELL_FAILED_TOO_MANY_OF_ITEM;
+                            else if (!(target->ToPlayer()->HasItemCount(effect->ItemType)))
+                            {
+                                player->SendEquipError(msg, nullptr, nullptr, effect->ItemType);
+                                return SPELL_FAILED_DONT_REPORT;
+                            }
                             else if (SpellEffectInfo const* efi = GetEffect(EFFECT_1))
                                 player->CastSpell(m_caster, efi->CalcValue(), false);        // move this to anywhere
                             return SPELL_FAILED_DONT_REPORT;
@@ -6686,7 +6775,7 @@ SpellCastResult Spell::CheckItems(uint32* param1 /*= nullptr*/, uint32* param2 /
                     InventoryResult msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, effect->ItemType, 1);
                     if (msg != EQUIP_ERR_OK)
                     {
-                        player->SendEquipError(msg, NULL, NULL, effect->ItemType);
+                        player->SendEquipError(msg, nullptr, nullptr, effect->ItemType);
                         return SPELL_FAILED_DONT_REPORT;
                     }
                 }
@@ -6697,7 +6786,8 @@ SpellCastResult Spell::CheckItems(uint32* param1 /*= nullptr*/, uint32* param2 /
                 if (!targetItem)
                     return SPELL_FAILED_ITEM_NOT_FOUND;
 
-                if (targetItem->GetTemplate()->GetBaseItemLevel() < m_spellInfo->BaseLevel)
+                // required level has to be checked also! Exploit fix
+                if (targetItem->GetItemLevel(targetItem->GetOwner()) < m_spellInfo->BaseLevel || (targetItem->GetRequiredLevel() && uint32(targetItem->GetRequiredLevel()) < m_spellInfo->BaseLevel))
                     return SPELL_FAILED_LOWLEVEL;
 
                 bool isItemUsable = false;
@@ -6762,6 +6852,15 @@ SpellCastResult Spell::CheckItems(uint32* param1 /*= nullptr*/, uint32* param2 /
                         return SPELL_FAILED_ERROR;
                     if (pEnchant->Flags & ENCHANTMENT_CAN_SOULBOUND)
                         return SPELL_FAILED_NOT_TRADEABLE;
+                }
+
+                // Apply item level restriction if the enchanting spell has max level restrition set
+                if (m_CastItem && m_spellInfo->MaxLevel > 0)
+                {
+                    if (item->GetTemplate()->GetBaseItemLevel() < (uint32)m_CastItem->GetTemplate()->GetBaseRequiredLevel())
+                        return SPELL_FAILED_LOWLEVEL;
+                    if (item->GetTemplate()->GetBaseItemLevel() > m_spellInfo->MaxLevel)
+                        return SPELL_FAILED_HIGHLEVEL;
                 }
                 break;
             }
@@ -7137,18 +7236,49 @@ bool Spell::CheckEffectTarget(Unit const* target, SpellEffectInfo const* effect,
 
     /// @todo shit below shouldn't be here, but it's temporary
     //Check targets for LOS visibility
-    if (losPosition)
-        return target->IsWithinLOS(losPosition->GetPositionX(), losPosition->GetPositionY(), losPosition->GetPositionZ(), VMAP::ModelIgnoreFlags::M2);
-    else
+    switch (effect->Effect)
     {
-        // Get GO cast coordinates if original caster -> GO
-        WorldObject* caster = NULL;
-        if (m_originalCasterGUID.IsGameObject())
-            caster = m_caster->GetMap()->GetGameObject(m_originalCasterGUID);
-        if (!caster)
-            caster = m_caster;
-        if (target != m_caster && !target->IsWithinLOSInMap(caster, VMAP::ModelIgnoreFlags::M2))
-            return false;
+        case SPELL_EFFECT_SKIN_PLAYER_CORPSE:
+        {
+            if (!m_targets.GetCorpseTargetGUID())
+            {
+                if (target->IsWithinLOSInMap(m_caster, VMAP::ModelIgnoreFlags::M2) && target->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SKINNABLE))
+                    return true;
+
+                return false;
+            }
+
+            Corpse* corpse = ObjectAccessor::GetCorpse(*m_caster, m_targets.GetCorpseTargetGUID());
+            if (!corpse)
+                return false;
+
+            if (target->GetGUID() != corpse->GetOwnerGUID())
+                return false;
+        
+            if (!corpse->HasFlag(CORPSE_FIELD_DYNAMIC_FLAGS, CORPSE_DYNFLAG_LOOTABLE))
+                return false;
+
+            if (!corpse->IsWithinLOSInMap(m_caster, VMAP::ModelIgnoreFlags::M2))
+                return false;
+
+            break;
+        }
+        default:
+        {
+            if (losPosition)
+                return target->IsWithinLOS(losPosition->GetPositionX(), losPosition->GetPositionY(), losPosition->GetPositionZ(), VMAP::ModelIgnoreFlags::M2);
+            else
+            {
+                // Get GO cast coordinates if original caster -> GO
+                WorldObject* caster = NULL;
+                if (m_originalCasterGUID.IsGameObject())
+                    caster = m_caster->GetMap()->GetGameObject(m_originalCasterGUID);
+                if (!caster)
+                    caster = m_caster;
+                if (target != m_caster && !target->IsWithinLOSInMap(caster, VMAP::ModelIgnoreFlags::M2))
+                    return false;
+            }
+        }
     }
 
     return true;
@@ -7217,7 +7347,7 @@ bool Spell::IsAutoActionResetSpell() const
 bool Spell::IsNeedSendToClient() const
 {
     return m_SpellVisual || m_spellInfo->IsChanneled() ||
-        (m_spellInfo->HasAttribute(SPELL_ATTR8_AURA_SEND_AMOUNT)) || m_spellInfo->Speed > 0.0f || (!m_triggeredByAuraSpell && !IsTriggered());
+        (m_spellInfo->HasAttribute(SPELL_ATTR8_AURA_SEND_AMOUNT)) || m_spellInfo->HasHitDelay() || (!m_triggeredByAuraSpell && !IsTriggered());
 }
 
 bool Spell::HaveTargetsForEffect(uint8 effect) const
@@ -7329,11 +7459,11 @@ bool SpellEvent::Execute(uint64 e_time, uint32 p_time)
                 // delaying had just started, record the moment
                 m_Spell->SetDelayStart(e_time);
                 // handle effects on caster if the spell has travel time but also affects the caster in some way
-                if (!m_Spell->m_targets.HasDst())
-                {
-                    uint64 n_offset = m_Spell->handle_delayed(0);
+                uint64 n_offset = m_Spell->handle_delayed(0);
+                if (m_Spell->m_spellInfo->LaunchDelay)
+                    ASSERT(n_offset == uint64(std::floor(m_Spell->m_spellInfo->LaunchDelay * 1000.0f)));
+                else
                     ASSERT(n_offset == m_Spell->GetDelayMoment());
-                }
                 // re-plan the event for the delay moment
                 m_Spell->GetCaster()->m_Events.AddEvent(this, e_time + m_Spell->GetDelayMoment(), false);
                 return false;                               // event not complete
@@ -7454,13 +7584,7 @@ void Spell::DoAllEffectOnLaunchTarget(TargetInfo& targetInfo, float* multiplier)
         }
     }
 
-    if (Player* modOwner = m_caster->GetSpellModOwner())
-        modOwner->SetSpellModTakingSpell(this, true);
-
     targetInfo.crit = m_caster->IsSpellCrit(unit, this, nullptr, m_spellSchoolMask, m_attackType);
-
-    if (Player* modOwner = m_caster->GetSpellModOwner())
-        modOwner->SetSpellModTakingSpell(this, false);
 }
 
 SpellCastResult Spell::CanOpenLock(uint32 effIndex, uint32 lockId, SkillType& skillId, int32& reqSkillValue, int32& skillValue)
@@ -8110,8 +8234,20 @@ WorldObjectSpellAreaTargetCheck::WorldObjectSpellAreaTargetCheck(float range, Po
 
 bool WorldObjectSpellAreaTargetCheck::operator()(WorldObject* target)
 {
-    if (!target->IsWithinDist3d(_position, _range) && !(target->ToGameObject() && target->ToGameObject()->IsInRange(_position->GetPositionX(), _position->GetPositionY(), _position->GetPositionZ(), _range)))
-        return false;
+    if (target->ToGameObject())
+    {
+        // isInRange including the dimension of the GO
+        bool isInRange = target->ToGameObject()->IsInRange(_position->GetPositionX(), _position->GetPositionY(), _position->GetPositionZ(), _range);
+        if (!isInRange)
+            return false;
+    }
+    else
+    {
+        bool isInsideCylinder = target->IsWithinDist2d(_position, _range) && std::abs(target->GetPositionZ() - _position->GetPositionZ()) <= _range;
+        if (!isInsideCylinder)
+            return false;
+    }
+
     return WorldObjectSpellTargetCheck::operator ()(target);
 }
 
@@ -8128,7 +8264,7 @@ bool WorldObjectSpellConeTargetCheck::operator()(WorldObject* target)
     }
     else if (_spellInfo->HasAttribute(SPELL_ATTR0_CU_CONE_LINE))
     {
-        if (!_caster->HasInLine(target, target->GetObjectSize(), _caster->GetObjectSize()))
+        if (!_caster->HasInLine(target, target->GetCombatReach(), _caster->GetCombatReach()))
             return false;
     }
     else
@@ -8150,7 +8286,7 @@ WorldObjectSpellLineTargetCheck::WorldObjectSpellLineTargetCheck(float range, Un
 
 bool WorldObjectSpellLineTargetCheck::operator()(WorldObject* target)
 {
-    if (!_caster->HasInLine(target, target->GetObjectSize(), TRAJECTORY_MISSILE_SIZE))
+    if (!_caster->HasInLine(target, target->GetCombatReach(), TRAJECTORY_MISSILE_SIZE))
         return false;
 
     if (target->GetExactDist2d(_position) > _range)
@@ -8165,7 +8301,7 @@ WorldObjectSpellTrajTargetCheck::WorldObjectSpellTrajTargetCheck(float range, Po
 bool WorldObjectSpellTrajTargetCheck::operator()(WorldObject* target)
 {
     // return all targets on missile trajectory (0 - size of a missile)
-    if (!_caster->HasInLine(target, target->GetObjectSize(), TRAJECTORY_MISSILE_SIZE))
+    if (!_caster->HasInLine(target, target->GetCombatReach(), TRAJECTORY_MISSILE_SIZE))
         return false;
 
     if (target->GetExactDist2d(_position) > _range)

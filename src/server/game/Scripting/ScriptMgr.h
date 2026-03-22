@@ -383,9 +383,6 @@ class TC_GAME_API ItemScript : public ScriptObject
 
     public:
 
-        // Called when a dummy spell effect is triggered on the item.
-        virtual bool OnDummyEffect(Unit* /*caster*/, uint32 /*spellId*/, SpellEffIndex /*effIndex*/, Item* /*target*/) { return false; }
-
         // Called when a player accepts a quest from the item.
         virtual bool OnQuestAccept(Player* /*player*/, Item* /*item*/, Quest const* /*quest*/) { return false; }
 
@@ -397,6 +394,9 @@ class TC_GAME_API ItemScript : public ScriptObject
 
         // Called when the item is destroyed.
         virtual bool OnRemove(Player* /*player*/, Item* /*item*/) { return false; }
+
+        // Called before casting a combat spell from this item (chance on hit spells of item template, can be used to prevent cast if returning false)
+        virtual bool OnCastItemCombatSpell(Player* /*player*/, Unit* /*victim*/, SpellInfo const* /*spellInfo*/, Item* /*item*/) { return true; }
 };
 
 class TC_GAME_API UnitScript : public ScriptObject
@@ -429,9 +429,6 @@ class TC_GAME_API CreatureScript : public UnitScript, public UpdatableScript<Cre
         CreatureScript(const char* name);
 
     public:
-
-        // Called when a dummy spell effect is triggered on the creature.
-        virtual bool OnDummyEffect(Unit* /*caster*/, uint32 /*spellId*/, SpellEffIndex /*effIndex*/, Creature* /*target*/) { return false; }
 
         // Called when a player opens a gossip dialog with the creature.
         virtual bool OnGossipHello(Player* /*player*/, Creature* /*creature*/) { return false; }
@@ -468,9 +465,6 @@ class TC_GAME_API GameObjectScript : public ScriptObject, public UpdatableScript
         GameObjectScript(const char* name);
 
     public:
-
-        // Called when a dummy spell effect is triggered on the gameobject.
-        virtual bool OnDummyEffect(Unit* /*caster*/, uint32 /*spellId*/, SpellEffIndex /*effIndex*/, GameObject* /*target*/) { return false; }
 
         // Called when a player opens a gossip dialog with the gameobject.
         virtual bool OnGossipHello(Player* /*player*/, GameObject* /*go*/) { return false; }
@@ -1115,15 +1109,14 @@ class TC_GAME_API ScriptMgr
 
     public: /* ItemScript */
 
-        bool OnDummyEffect(Unit* caster, uint32 spellId, SpellEffIndex effIndex, Item* target);
         bool OnQuestAccept(Player* player, Item* item, Quest const* quest);
         bool OnItemUse(Player* player, Item* item, SpellCastTargets const& targets, ObjectGuid castId);
         bool OnItemExpire(Player* player, ItemTemplate const* proto);
         bool OnItemRemove(Player* player, Item* item);
+        bool OnCastItemCombatSpell(Player* player, Unit* victim, SpellInfo const* spellInfo, Item* item);
 
     public: /* CreatureScript */
 
-        bool OnDummyEffect(Unit* caster, uint32 spellId, SpellEffIndex effIndex, Creature* target);
         bool OnGossipHello(Player* player, Creature* creature);
         bool OnGossipSelect(Player* player, Creature* creature, uint32 sender, uint32 action);
         bool OnGossipSelectCode(Player* player, Creature* creature, uint32 sender, uint32 action, const char* code);
@@ -1137,7 +1130,6 @@ class TC_GAME_API ScriptMgr
 
     public: /* GameObjectScript */
 
-        bool OnDummyEffect(Unit* caster, uint32 spellId, SpellEffIndex effIndex, GameObject* target);
         bool OnGossipHello(Player* player, GameObject* go);
         bool OnGossipSelect(Player* player, GameObject* go, uint32 sender, uint32 action);
         bool OnGossipSelectCode(Player* player, GameObject* go, uint32 sender, uint32 action, const char* code);

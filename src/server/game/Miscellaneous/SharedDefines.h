@@ -95,8 +95,6 @@ enum Expansions
     EXPANSION_LEGION                   = 6,
     MAX_EXPANSIONS,
 
-    // future expansion
-    EXPANSION_BATTLE_FOR_AZEROTH       = 7,
 
     MAX_ACCOUNT_EXPANSIONS
 };
@@ -4569,6 +4567,8 @@ enum CorpseDynFlags
     CORPSE_DYNFLAG_LOOTABLE        = 0x0001
 };
 
+#define PLAYER_CORPSE_LOOT_ENTRY 1
+
 enum WeatherType
 {
     WEATHER_TYPE_FINE       = 0,
@@ -5258,6 +5258,14 @@ enum DiminishingLevels
     DIMINISHING_LEVEL_IMMUNE        = 3,
     DIMINISHING_LEVEL_4             = 3,
     DIMINISHING_LEVEL_TAUNT_IMMUNE  = 4
+};
+
+enum WeaponAttackType : uint8
+{
+    BASE_ATTACK   = 0,
+    OFF_ATTACK    = 1,
+    RANGED_ATTACK = 2,
+    MAX_ATTACK
 };
 
 enum TokenResult
@@ -6336,6 +6344,21 @@ enum SpecialSpells : uint32
 {
     SPELL_MERCENARY_CONTRACT_HORDE      = 193472,
     SPELL_MERCENARY_CONTRACT_ALLIANCE   = 193475,
+};
+
+enum class MountResult : uint32
+{
+    InvalidMountee = 0,
+    TooFarAway     = 1,
+    AlreadyMounted = 2,
+    NotMountable   = 3,
+    NotYourPet     = 4,
+    Other          = 5,
+    Looting        = 6,
+    RaceCantMount  = 7,
+    Shapeshifted   = 8,
+    ForcedDismount = 9,
+    Ok             = 10 // never sent
 };
 
 #endif

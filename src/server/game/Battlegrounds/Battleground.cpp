@@ -25,6 +25,7 @@
 #include "CreatureTextMgr.h"
 #include "DatabaseEnv.h"
 #include "Formulas.h"
+#include "GameTime.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "Guild.h"
@@ -274,7 +275,7 @@ inline void Battleground::_ProcessOfflineQueue()
         BattlegroundPlayerMap::iterator itr = m_Players.find(*(m_OfflineQueue.begin()));
         if (itr != m_Players.end())
         {
-            if (itr->second.OfflineRemoveTime <= sWorld->GetGameTime())
+            if (itr->second.OfflineRemoveTime <= GameTime::GetGameTime())
             {
                 RemovePlayerAtLeave(itr->first, true, true);// remove player from BG
                 m_OfflineQueue.pop_front();                 // remove from offline queue
@@ -734,7 +735,7 @@ void Battleground::EndBattleground(uint32 winner)
         SetWinner(BG_TEAM_NEUTRAL);
     }
 
-    PreparedStatement* stmt = nullptr;
+    CharacterDatabasePreparedStatement* stmt = nullptr;
     uint64 battlegroundId = 1;
     if (isBattleground() && sWorld->getBoolConfig(CONFIG_BATTLEGROUND_STORE_STATISTICS_ENABLE))
     {
@@ -837,14 +838,14 @@ void Battleground::EndBattleground(uint32 winner)
                 // TODO: loss honor xp
             }
 
-            player->UpdateCriteria(CRITERIA_TYPE_WIN_BG, 1);
+            player->UpdateCriteria(CRITERIA_TYPE_WIN_BG, player->GetMapId());
             if (!guildAwarded)
             {
                 guildAwarded = true;
                 if (ObjectGuid::LowType guildId = GetBgMap()->GetOwnerGuildId(player->GetBGTeam()))
                 {
                     if (Guild* guild = sGuildMgr->GetGuildById(guildId))
-                        guild->UpdateCriteria(CRITERIA_TYPE_WIN_BG, 1, 0, 0, NULL, player);
+                        guild->UpdateCriteria(CRITERIA_TYPE_WIN_BG, player->GetMapId(), 0, 0, NULL, player);
                 }
             }
         }
@@ -865,7 +866,7 @@ void Battleground::EndBattleground(uint32 winner)
         sBattlegroundMgr->BuildBattlegroundStatusActive(&battlefieldStatus, this, player, player->GetBattlegroundQueueIndex(bgQueueTypeId), player->GetBattlegroundQueueJoinTime(bgQueueTypeId), GetArenaType());
         player->SendDirectMessage(battlefieldStatus.Write());
 
-        player->UpdateCriteria(CRITERIA_TYPE_COMPLETE_BATTLEGROUND, 1);
+        player->UpdateCriteria(CRITERIA_TYPE_COMPLETE_BATTLEGROUND, player->GetMapId());
     }
 }
 
@@ -924,7 +925,7 @@ void Battleground::RemovePlayerAtLeave(ObjectGuid guid, bool Transport, bool Sen
     }
     else
     {
-        SQLTransaction trans(nullptr);
+        CharacterDatabaseTransaction trans(nullptr);
         Player::OfflineResurrect(guid, trans);
     }
 
@@ -987,6 +988,9 @@ void Battleground::RemovePlayerAtLeave(ObjectGuid guid, bool Transport, bool Sen
         player->SetBattlegroundId(0, BATTLEGROUND_TYPE_NONE);  // We're not in BG.
         // reset destination bg team
         player->SetBGTeam(0);
+
+        // remove all criterias on bg leave
+        player->ResetCriteria(CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
 
         if (Transport)
             player->TeleportToBGEntryPoint();
@@ -1121,17 +1125,8 @@ void Battleground::AddPlayer(Player* player)
         }
     }
 
-    player->ResetCriteria(CRITERIA_TYPE_KILL_CREATURE, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_WIN_BG, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_DAMAGE_DONE, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_BE_SPELL_TARGET, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_CAST_SPELL, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_BG_OBJECTIVE_CAPTURE, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_HONORABLE_KILL_AT_AREA, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_HONORABLE_KILL, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_HEALING_DONE, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_GET_KILLING_BLOWS, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
-    player->ResetCriteria(CRITERIA_TYPE_SPECIAL_PVP_KILL, CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
+    // reset all map criterias on map enter
+    player->ResetCriteria(CRITERIA_CONDITION_BG_MAP, GetMapId(), true);
 
     // setup BG group membership
     PlayerAddedToBGCheckIfBGIsRunning(player);
@@ -1197,7 +1192,7 @@ void Battleground::EventPlayerLoggedOut(Player* player)
 
     // player is correct pointer, it is checked in WorldSession::LogoutPlayer()
     m_OfflineQueue.push_back(player->GetGUID());
-    m_Players[guid].OfflineRemoveTime = sWorld->GetGameTime() + MAX_OFFLINE_TIME;
+    m_Players[guid].OfflineRemoveTime = GameTime::GetGameTime() + MAX_OFFLINE_TIME;
     if (GetStatus() == STATUS_IN_PROGRESS)
     {
         // drop flag and handle other cleanups

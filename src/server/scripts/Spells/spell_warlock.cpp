@@ -24,7 +24,10 @@
 
 #include "AreaTrigger.h"
 #include "AreaTriggerAI.h"
+#include "Cell.h"
+#include "CellImpl.h"
 #include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "Pet.h"
@@ -627,7 +630,7 @@ class spell_warl_demonic_circle_teleport : public AuraScript
             if (GameObject* circle = player->GetGameObject(SPELL_WARLOCK_DEMONIC_CIRCLE_SUMMON))
             {
                 player->NearTeleportTo(circle->GetPositionX(), circle->GetPositionY(), circle->GetPositionZ(), circle->GetOrientation());
-                player->RemoveMovementImpairingAuras();
+                player->RemoveMovementImpairingAuras(true);
             }
         }
     }

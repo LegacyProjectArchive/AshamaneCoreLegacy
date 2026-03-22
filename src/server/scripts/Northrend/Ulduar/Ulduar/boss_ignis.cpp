@@ -15,6 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "GameTime.h"
 #include "ScriptMgr.h"
 #include "InstanceScript.h"
 #include "ObjectAccessor.h"
@@ -197,7 +198,7 @@ class boss_ignis : public CreatureScript
 
                 me->RemoveAuraFromStack(SPELL_STRENGHT);
                 // Shattered Achievement
-                time_t secondKill = sWorld->GetGameTime();
+                time_t secondKill = GameTime::GetGameTime();
                 if ((secondKill - _firstConstructKill) < 5)
                     _shattered = true;
                 _firstConstructKill = secondKill;
@@ -327,7 +328,7 @@ class npc_iron_construct : public CreatureScript
                 if (me->HasAura(RAID_MODE(SPELL_BRITTLE, SPELL_BRITTLE_25)) && damage >= 5000)
                 {
                     DoCast(SPELL_SHATTER);
-                    if (Creature* ignis = ObjectAccessor::GetCreature(*me, _instance->GetGuidData(BOSS_IGNIS)))
+                    if (Creature* ignis = _instance->GetCreature(BOSS_IGNIS))
                         if (ignis->AI())
                             ignis->AI()->DoAction(ACTION_REMOVE_BUFF);
 

@@ -142,7 +142,7 @@ public:
 
             // before GM
             float x, y, z;
-            gmPlayer->GetClosePoint(x, y, z, player->GetObjectSize());
+            gmPlayer->GetClosePoint(x, y, z, player->GetCombatReach());
             player->TeleportTo(gmPlayer->GetMapId(), x, y, z, player->GetOrientation());
         }
 
@@ -296,7 +296,7 @@ public:
         // If not, we extract it from the SQL.
         if (!groupTarget)
         {
-            PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_GROUP_MEMBER);
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_GROUP_MEMBER);
             stmt->setUInt64(0, guidTarget.GetCounter());
             PreparedQueryResult resultGroup = CharacterDatabase.Query(stmt);
             if (resultGroup)

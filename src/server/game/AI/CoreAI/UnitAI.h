@@ -97,6 +97,33 @@ struct TC_GAME_API NonTankTargetSelector : public std::unary_function<Unit*, boo
         bool _playerOnly;
 };
 
+// Simple selector for units using mana
+struct TC_GAME_API PowerUsersSelector
+{
+public:
+    PowerUsersSelector(Unit const* unit, Powers power, float dist, bool playerOnly) : _me(unit), _power(power), _dist(dist), _playerOnly(playerOnly) { }
+    bool operator()(Unit const* target) const;
+
+private:
+    Unit const* _me;
+    Powers const _power;
+    float const _dist;
+    bool const _playerOnly;
+};
+
+struct TC_GAME_API FarthestTargetSelector
+{
+public:
+    FarthestTargetSelector(Unit const* unit, float dist, bool playerOnly, bool inLos) : _me(unit), _dist(dist), _playerOnly(playerOnly), _inLos(inLos) {}
+    bool operator()(Unit const* target) const;
+
+private:
+    const Unit* _me;
+    float _dist;
+    bool _playerOnly;
+    bool _inLos;
+};
+
 TC_GAME_API void SortByDistanceTo(Unit* reference, std::list<Unit*>& targets);
 
 class TC_GAME_API UnitAI
@@ -244,6 +271,8 @@ class TC_GAME_API UnitAI
         void DoCastAOE(uint32 spellId, bool triggered = false);
         void DoCastRandom(uint32 spellId, float dist, bool triggered = false, int32 aura = 0, uint32 position = 0);
 
+        virtual bool ShouldSparWith(Unit const* /*target*/) const { return false; }
+
         void DoMeleeAttackIfReady();
         bool DoSpellAttackIfReady(uint32 spellId);
 
@@ -256,7 +285,6 @@ class TC_GAME_API UnitAI
         virtual void sQuestAccept(Player* /*player*/, Quest const* /*quest*/) { }
         virtual void sQuestSelect(Player* /*player*/, Quest const* /*quest*/) { }
         virtual void sQuestReward(Player* /*player*/, Quest const* /*quest*/, uint32 /*opt*/) { }
-        virtual bool sOnDummyEffect(Unit* /*caster*/, uint32 /*spellId*/, SpellEffIndex /*effIndex*/) { return false; }
         virtual void sOnGameEvent(bool /*start*/, uint16 /*eventId*/) { }
 
         /// Add timed delayed operation

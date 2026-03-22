@@ -23,7 +23,7 @@
 #include <G3D/g3dmath.h>
 #include <sstream>
 
-bool Position::operator==(Position const &a)
+bool Position::operator==(Position const &a) const
 {
     return (G3D::fuzzyEq(a.m_positionX, m_positionX) &&
         G3D::fuzzyEq(a.m_positionY, m_positionY) &&
@@ -146,6 +146,12 @@ bool Position::IsWithinBox(const Position& center, float xradius, float yradius,
         return false;
 
     return true;
+}
+
+bool Position::IsWithinDoubleVerticalCylinder(Position const* center, float radius, float height) const
+{
+    float verticalDelta = GetPositionZ() - center->GetPositionZ();
+    return IsInDist2d(center, radius) && std::abs(verticalDelta) <= height;
 }
 
 bool Position::HasInArc(float arc, const Position* obj, float border) const

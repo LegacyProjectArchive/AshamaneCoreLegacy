@@ -336,32 +336,34 @@ void SpellMgr::GetSetOfSpellsInSpellGroup(SpellGroup group_id, std::set<uint32>&
     }
 }
 
-bool SpellMgr::AddSameEffectStackRuleSpellGroups(SpellInfo const* spellInfo, int32 amount, std::map<SpellGroup, int32>& groups) const
+bool SpellMgr::AddSameEffectStackRuleSpellGroups(SpellInfo const* spellInfo, uint32 auraType, int32 amount, std::map<SpellGroup, int32>& groups) const
 {
     uint32 spellId = spellInfo->GetFirstRankSpell()->Id;
-    SpellSpellGroupMapBounds spellGroup = GetSpellSpellGroupMapBounds(spellId);
+    auto spellGroupBounds = GetSpellSpellGroupMapBounds(spellId);
     // Find group with SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT if it belongs to one
-    for (SpellSpellGroupMap::const_iterator itr = spellGroup.first; itr != spellGroup.second; ++itr)
+    for (auto itr = spellGroupBounds.first; itr != spellGroupBounds.second; ++itr)
     {
         SpellGroup group = itr->second;
-        SpellGroupStackMap::const_iterator found = mSpellGroupStack.find(group);
-        if (found != mSpellGroupStack.end())
+        auto found = mSpellSameEffectStack.find(group);
+        if (found != mSpellSameEffectStack.end())
         {
-            if (found->second == SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT)
+            // check auraTypes
+            if (!found->second.count(auraType))
+                continue;
+
+            // Put the highest amount in the map
+            auto groupItr = groups.find(group);
+            if (groupItr == groups.end())
+                groups.emplace(group, amount);
+            else
             {
-                // Put the highest amount in the map
-                if (groups.find(group) == groups.end())
-                    groups[group] = amount;
-                else
-                {
-                    int32 curr_amount = groups[group];
-                    // Take absolute value because this also counts for the highest negative aura
-                    if (abs(curr_amount) < abs(amount))
-                        groups[group] = amount;
-                }
-                // return because a spell should be in only one SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT group
-                return true;
+                int32 curr_amount = groups[group];
+                // Take absolute value because this also counts for the highest negative aura
+                if (std::abs(curr_amount) < std::abs(amount))
+                    groupItr->second = amount;
             }
+            // return because a spell should be in only one SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT group per auraType
+            return true;
         }
     }
     // Not in a SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT group, so return false
@@ -370,10 +372,14 @@ bool SpellMgr::AddSameEffectStackRuleSpellGroups(SpellInfo const* spellInfo, int
 
 SpellGroupStackRule SpellMgr::CheckSpellGroupStackRules(SpellInfo const* spellInfo1, SpellInfo const* spellInfo2) const
 {
+    ASSERT(spellInfo1);
+    ASSERT(spellInfo2);
+
     uint32 spellid_1 = spellInfo1->GetFirstRankSpell()->Id;
     uint32 spellid_2 = spellInfo2->GetFirstRankSpell()->Id;
     if (spellid_1 == spellid_2)
         return SPELL_GROUP_STACK_RULE_DEFAULT;
+
     // find SpellGroups which are common for both spells
     SpellSpellGroupMapBounds spellGroup1 = GetSpellSpellGroupMapBounds(spellid_1);
     std::set<SpellGroup> groups;
@@ -1185,19 +1191,19 @@ void SpellMgr::LoadSpellGroups()
         }
         int32 spell_id = fields[1].GetInt32();
 
-        groups.insert(std::set<uint32>::value_type(group_id));
-        mSpellGroupSpell.insert(SpellGroupSpellMap::value_type((SpellGroup)group_id, spell_id));
+        groups.insert(group_id);
+        mSpellGroupSpell.emplace(SpellGroup(group_id), spell_id);
 
     } while (result->NextRow());
 
-    for (SpellGroupSpellMap::iterator itr = mSpellGroupSpell.begin(); itr!= mSpellGroupSpell.end();)
+    for (auto itr = mSpellGroupSpell.begin(); itr!= mSpellGroupSpell.end();)
     {
         if (itr->second < 0)
         {
             if (groups.find(abs(itr->second)) == groups.end())
             {
                 TC_LOG_ERROR("sql.sql", "SpellGroup id %u listed in `spell_group` does not exist", abs(itr->second));
-                mSpellGroupSpell.erase(itr++);
+                itr = mSpellGroupSpell.erase(itr);
             }
             else
                 ++itr;
@@ -1205,31 +1211,30 @@ void SpellMgr::LoadSpellGroups()
         else
         {
             SpellInfo const* spellInfo = GetSpellInfo(itr->second);
-
             if (!spellInfo)
             {
                 TC_LOG_ERROR("sql.sql", "The spell %u listed in `spell_group` does not exist", itr->second);
-                mSpellGroupSpell.erase(itr++);
+                itr = mSpellGroupSpell.erase(itr);
             }
             else if (spellInfo->GetRank() > 1)
             {
                 TC_LOG_ERROR("sql.sql", "The spell %u listed in `spell_group` is not the first rank of the spell.", itr->second);
-                mSpellGroupSpell.erase(itr++);
+                itr = mSpellGroupSpell.erase(itr);
             }
             else
                 ++itr;
         }
     }
 
-    for (std::set<uint32>::iterator groupItr = groups.begin(); groupItr != groups.end(); ++groupItr)
+    for (auto groupItr = groups.begin(); groupItr != groups.end(); ++groupItr)
     {
         std::set<uint32> spells;
         GetSetOfSpellsInSpellGroup(SpellGroup(*groupItr), spells);
 
-        for (std::set<uint32>::iterator spellItr = spells.begin(); spellItr != spells.end(); ++spellItr)
+        for (auto spellItr = spells.begin(); spellItr != spells.end(); ++spellItr)
         {
             ++count;
-            mSpellSpellGroup.insert(SpellSpellGroupMap::value_type(*spellItr, SpellGroup(*groupItr)));
+            mSpellSpellGroup.emplace(*spellItr, SpellGroup(*groupItr));
         }
     }
 
@@ -1241,6 +1246,9 @@ void SpellMgr::LoadSpellGroupStackRules()
     uint32 oldMSTime = getMSTime();
 
     mSpellGroupStack.clear();                                  // need for reload case
+    mSpellSameEffectStack.clear();
+
+    std::vector<uint32> sameEffectGroups;
 
     //                                                       0         1
     QueryResult result = WorldDatabase.Query("SELECT group_id, stack_rule FROM spell_group_stack_rules");
@@ -1263,20 +1271,126 @@ void SpellMgr::LoadSpellGroupStackRules()
             continue;
         }
 
-        SpellGroupSpellMapBounds spellGroup = GetSpellGroupSpellMapBounds((SpellGroup)group_id);
-
-        if (spellGroup.first == spellGroup.second)
+        auto bounds = GetSpellGroupSpellMapBounds((SpellGroup)group_id);
+        if (bounds.first == bounds.second)
         {
             TC_LOG_ERROR("sql.sql", "SpellGroup id %u listed in `spell_group_stack_rules` does not exist.", group_id);
             continue;
         }
 
-        mSpellGroupStack[(SpellGroup)group_id] = (SpellGroupStackRule)stack_rule;
+        mSpellGroupStack.emplace(SpellGroup(group_id), SpellGroupStackRule(stack_rule));
+
+        // different container for same effect stack rules, need to check effect types
+        if (stack_rule == SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT)
+            sameEffectGroups.push_back(group_id);
 
         ++count;
     } while (result->NextRow());
 
     TC_LOG_INFO("server.loading", ">> Loaded %u spell group stack rules in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
+
+    count = 0;
+    oldMSTime = getMSTime();
+    TC_LOG_INFO("server.loading", ">> Parsing SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT stack rules...");
+
+    for (uint32 group_id : sameEffectGroups)
+    {
+        std::set<uint32> spellIds;
+        GetSetOfSpellsInSpellGroup(SpellGroup(group_id), spellIds);
+
+        std::unordered_set<uint32> auraTypes;
+
+        // we have to 'guess' what effect this group corresponds to
+        {
+            std::unordered_multiset<uint32 /*auraName*/> frequencyContainer;
+
+            // only waylay for the moment (shared group)
+            std::vector<std::vector<uint32 /*auraName*/>> const SubGroups =
+            {
+                { SPELL_AURA_MOD_MELEE_HASTE, SPELL_AURA_MOD_MELEE_RANGED_HASTE, SPELL_AURA_MOD_RANGED_HASTE }
+            };
+
+            for (uint32 spellId : spellIds)
+            {
+                SpellInfo const* spellInfo = AssertSpellInfo(spellId);
+                for (SpellEffectInfo const* effectInfo : spellInfo->GetEffectsForDifficulty(DIFFICULTY_NONE))
+                {
+                    if (!effectInfo->IsAura())
+                        continue;
+
+                    int32 auraName = static_cast<int32>(effectInfo->ApplyAuraName);
+                    for (std::vector<uint32> const& subGroup : SubGroups)
+                    {
+                        if (std::find(subGroup.begin(), subGroup.end(), auraName) != subGroup.end())
+                        {
+                            // count as first aura
+                            auraName = subGroup.front();
+                            break;
+                        }
+                    }
+
+                    frequencyContainer.insert(auraName);
+                }
+            }
+
+            uint32 auraType = 0;
+            size_t auraTypeCount = 0;
+            for (uint32 auraName : frequencyContainer)
+            {
+                size_t currentCount = frequencyContainer.count(auraName);
+                if (currentCount > auraTypeCount)
+                {
+                    auraType = auraName;
+                    auraTypeCount = currentCount;
+                }
+            }
+
+            for (std::vector<uint32> const& subGroup : SubGroups)
+            {
+                if (auraType == subGroup.front())
+                {
+                    auraTypes.insert(subGroup.begin(), subGroup.end());
+                    break;
+                }
+            }
+
+            if (auraTypes.empty())
+                auraTypes.insert(auraType);
+        }
+
+        // re-check spells against guessed group
+        for (uint32 spellId : spellIds)
+        {
+            SpellInfo const* spellInfo = AssertSpellInfo(spellId);
+
+            bool found = false;
+            while (spellInfo)
+            {
+                for (uint32 auraType : auraTypes)
+                {
+                    if (spellInfo->HasAura(DIFFICULTY_NONE, AuraType(auraType)))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (found)
+                    break;
+
+                spellInfo = spellInfo->GetNextRankSpell();
+            }
+
+            // not found either, log error
+            if (!found)
+                TC_LOG_ERROR("sql.sql", "SpellId %u listed in `spell_group` with stack rule 3 does not share aura assigned for group %u", spellId, group_id);
+        }
+
+        mSpellSameEffectStack[SpellGroup(group_id)] = auraTypes;
+        ++count;
+    }
+
+    TC_LOG_INFO("server.loading", ">> Parsed %u SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT stack rules in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
 }
 
 void SpellMgr::LoadSpellProcs()
@@ -1287,8 +1401,8 @@ void SpellMgr::LoadSpellProcs()
 
     //                                                     0           1                2                 3                 4                 5                 6
     QueryResult result = WorldDatabase.Query("SELECT SpellId, SchoolMask, SpellFamilyName, SpellFamilyMask0, SpellFamilyMask1, SpellFamilyMask2, SpellFamilyMask3, "
-    //           7              8               9       10              11              12      13        14      15
-        "ProcFlags, SpellTypeMask, SpellPhaseMask, HitMask, AttributesMask, ProcsPerMinute, Chance, Cooldown, Charges FROM spell_proc");
+    //           7              8               9       10              11                  12              13      14        15       16
+        "ProcFlags, SpellTypeMask, SpellPhaseMask, HitMask, AttributesMask, DisableEffectsMask, ProcsPerMinute, Chance, Cooldown, Charges FROM spell_proc");
 
     uint32 count = 0;
     if (result)
@@ -1338,10 +1452,11 @@ void SpellMgr::LoadSpellProcs()
             baseProcEntry.SpellPhaseMask     = fields[9].GetUInt32();
             baseProcEntry.HitMask            = fields[10].GetUInt32();
             baseProcEntry.AttributesMask     = fields[11].GetUInt32();
-            baseProcEntry.ProcsPerMinute     = fields[12].GetFloat();
-            baseProcEntry.Chance             = fields[13].GetFloat();
-            baseProcEntry.Cooldown           = Milliseconds(fields[14].GetUInt32());
-            baseProcEntry.Charges            = fields[15].GetUInt8();
+            baseProcEntry.DisableEffectsMask = fields[12].GetUInt32();
+            baseProcEntry.ProcsPerMinute     = fields[13].GetFloat();
+            baseProcEntry.Chance             = fields[14].GetFloat();
+            baseProcEntry.Cooldown           = Milliseconds(fields[15].GetUInt32());
+            baseProcEntry.Charges            = fields[16].GetUInt8();
 
             while (spellInfo)
             {
@@ -1611,6 +1726,7 @@ void SpellMgr::LoadSpellProcs()
         }
 
         procEntry.AttributesMask  = 0;
+        procEntry.DisableEffectsMask = 0;
         if (spellInfo->ProcFlags & PROC_FLAG_KILL)
             procEntry.AttributesMask |= PROC_ATTR_REQ_EXP_OR_HONOR;
         if (addTriggerFlag)
@@ -1801,8 +1917,8 @@ void SpellMgr::LoadSpellEnchantProcData()
 
     mSpellEnchantProcEventMap.clear();                             // need for reload case
 
-    //                                                  0         1           2         3
-    QueryResult result = WorldDatabase.Query("SELECT entry, customChance, PPMChance, procEx FROM spell_enchant_proc_data");
+    //                                                       0       1               2        3               4
+    QueryResult result = WorldDatabase.Query("SELECT EnchantID, Chance, ProcsPerMinute, HitMask, AttributesMask FROM spell_enchant_proc_data");
     if (!result)
     {
         TC_LOG_INFO("server.loading", ">> Loaded 0 spell enchant proc event conditions. DB table `spell_enchant_proc_data` is empty.");
@@ -1825,9 +1941,10 @@ void SpellMgr::LoadSpellEnchantProcData()
 
         SpellEnchantProcEntry spe;
 
-        spe.customChance = fields[1].GetUInt32();
-        spe.PPMChance = fields[2].GetFloat();
-        spe.procEx = fields[3].GetUInt32();
+        spe.Chance = fields[1].GetFloat();
+        spe.ProcsPerMinute = fields[2].GetFloat();
+        spe.HitMask = fields[3].GetUInt32();
+        spe.AttributesMask = fields[4].GetUInt32();
 
         mSpellEnchantProcEventMap[enchantId] = spe;
 
@@ -2423,6 +2540,14 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
 
             switch (effect->ApplyAuraName)
             {
+                case SPELL_AURA_MOD_POSSESS:
+                case SPELL_AURA_MOD_CONFUSE:
+                case SPELL_AURA_MOD_CHARM:
+                case SPELL_AURA_AOE_CHARM:
+                case SPELL_AURA_MOD_FEAR:
+                case SPELL_AURA_MOD_STUN:
+                    spellInfo->AttributesCu |= SPELL_ATTR0_CU_AURA_CC;
+                    break;
                 case SPELL_AURA_PERIODIC_HEAL:
                 case SPELL_AURA_PERIODIC_DAMAGE:
                 case SPELL_AURA_PERIODIC_DAMAGE_PERCENT:
@@ -2503,6 +2628,87 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
             }
         }
 
+        // spells ignoring hit result should not be binary
+        if (!spellInfo->HasAttribute(SPELL_ATTR3_IGNORE_HIT_RESULT))
+        {
+            bool setFlag = false;
+            for (SpellEffectInfo const* effect : spellInfo->GetEffectsForDifficulty(DIFFICULTY_NONE))
+            {
+                if (!effect)
+                    continue;
+
+                if (effect->IsEffect())
+                {
+                    switch (effect->Effect)
+                    {
+                    case SPELL_EFFECT_SCHOOL_DAMAGE:
+                    case SPELL_EFFECT_WEAPON_DAMAGE:
+                    case SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL:
+                    case SPELL_EFFECT_NORMALIZED_WEAPON_DMG:
+                    case SPELL_EFFECT_WEAPON_PERCENT_DAMAGE:
+                    case SPELL_EFFECT_TRIGGER_SPELL:
+                    case SPELL_EFFECT_TRIGGER_SPELL_WITH_VALUE:
+                        break;
+                    case SPELL_EFFECT_PERSISTENT_AREA_AURA:
+                    case SPELL_EFFECT_APPLY_AURA:
+                    case SPELL_EFFECT_APPLY_AREA_AURA_PARTY:
+                    case SPELL_EFFECT_APPLY_AREA_AURA_RAID:
+                    case SPELL_EFFECT_APPLY_AREA_AURA_FRIEND:
+                    case SPELL_EFFECT_APPLY_AREA_AURA_ENEMY:
+                    case SPELL_EFFECT_APPLY_AREA_AURA_PET:
+                    case SPELL_EFFECT_APPLY_AREA_AURA_OWNER:
+                    {
+                        if (effect->ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                            effect->ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE_PERCENT ||
+                            effect->ApplyAuraName == SPELL_AURA_DUMMY ||
+                            effect->ApplyAuraName == SPELL_AURA_PERIODIC_LEECH ||
+                            effect->ApplyAuraName == SPELL_AURA_PERIODIC_HEALTH_FUNNEL ||
+                            effect->ApplyAuraName == SPELL_AURA_PERIODIC_DUMMY)
+                            break;
+                    }
+                    default:
+                    {
+                        // No value and not interrupt cast or crowd control without SPELL_ATTR0_UNAFFECTED_BY_INVULNERABILITY flag
+                        if (!effect->CalcValue() && !((effect->Effect == SPELL_EFFECT_INTERRUPT_CAST || spellInfo->HasAttribute(SPELL_ATTR0_CU_AURA_CC)) && !spellInfo->HasAttribute(SPELL_ATTR0_UNAFFECTED_BY_INVULNERABILITY)))
+                            break;
+
+                        // Sindragosa Frost Breath
+                        if (spellInfo->Id == 69649 || spellInfo->Id == 71056 || spellInfo->Id == 71057 || spellInfo->Id == 71058 || spellInfo->Id == 73061 || spellInfo->Id == 73062 || spellInfo->Id == 73063 || spellInfo->Id == 73064)
+                            break;
+
+                        // Frostbolt
+                        if (spellInfo->SpellFamilyName == SPELLFAMILY_MAGE && (spellInfo->SpellFamilyFlags[0] & 0x20))
+                            break;
+
+                        // Frost Fever
+                        if (spellInfo->Id == 55095)
+                            break;
+
+                        // Haunt
+                        if (spellInfo->SpellFamilyName == SPELLFAMILY_WARLOCK && (spellInfo->SpellFamilyFlags[1] & 0x40000))
+                            break;
+
+                        setFlag = true;
+                        break;
+                    }
+                    }
+
+                    if (setFlag)
+                    {
+                        spellInfo->AttributesCu |= SPELL_ATTR0_CU_BINARY_SPELL;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Remove normal school mask to properly calculate damage
+        if ((spellInfo->SchoolMask & SPELL_SCHOOL_MASK_NORMAL) && (spellInfo->SchoolMask & SPELL_SCHOOL_MASK_MAGIC))
+        {
+            spellInfo->SchoolMask &= ~SPELL_SCHOOL_MASK_NORMAL;
+            spellInfo->AttributesCu |= SPELL_ATTR0_CU_SCHOOLMASK_NORMAL_WITH_MAGIC;
+        }
+
         if (!spellInfo->_IsPositiveEffect(EFFECT_0, false))
             spellInfo->AttributesCu |= SPELL_ATTR0_CU_NEGATIVE_EFF0;
 
@@ -2515,8 +2721,68 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
         if (talentSpells.count(spellInfo->Id))
             spellInfo->AttributesCu |= SPELL_ATTR0_CU_IS_TALENT;
 
+        switch (spellInfo->SpellFamilyName)
+        {
+        case SPELLFAMILY_WARRIOR:
+            // Shout / Piercing Howl
+            if (spellInfo->SpellFamilyFlags[0] & 0x20000/* || spellInfo->SpellFamilyFlags[1] & 0x20*/)
+                spellInfo->AttributesCu |= SPELL_ATTR0_CU_AURA_CC;
+            break;
+        case SPELLFAMILY_DRUID:
+            // Roar
+            if (spellInfo->SpellFamilyFlags[0] & 0x8)
+                spellInfo->AttributesCu |= SPELL_ATTR0_CU_AURA_CC;
+            break;
+        case SPELLFAMILY_GENERIC:
+            // Stoneclaw Totem effect
+            if (spellInfo->Id == 5729)
+                spellInfo->AttributesCu |= SPELL_ATTR0_CU_AURA_CC;
+            break;
+        default:
+            break;
+        }
 
         spellInfo->_InitializeExplicitTargetMask();
+    }
+
+    // addition for binary spells, ommit spells triggering other spells
+    for (uint32 i = 0; i < GetSpellInfoStoreSize(); ++i)
+    {
+        spellInfo = mSpellInfoMap[i];
+        if (!spellInfo)
+            continue;
+
+        if (spellInfo->HasAttribute(SPELL_ATTR0_CU_BINARY_SPELL))
+            continue;
+
+        bool allNonBinary = true;
+        bool overrideAttr = false;
+        for (SpellEffectInfo const* effect : spellInfo->GetEffectsForDifficulty(DIFFICULTY_NONE))
+        {
+            if (!effect)
+                continue;
+
+            if (effect->IsAura() && effect->TriggerSpell)
+            {
+                switch (effect->ApplyAuraName)
+                {
+                case SPELL_AURA_PERIODIC_TRIGGER_SPELL:
+                case SPELL_AURA_PERIODIC_TRIGGER_SPELL_WITH_VALUE:
+                    if (SpellInfo const* triggerSpell = sSpellMgr->GetSpellInfo(effect->TriggerSpell))
+                    {
+                        overrideAttr = true;
+                        if (triggerSpell->HasAttribute(SPELL_ATTR0_CU_BINARY_SPELL))
+                            allNonBinary = false;
+                    }
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+
+        if (overrideAttr && allNonBinary)
+            spellInfo->AttributesCu &= ~SPELL_ATTR0_CU_BINARY_SPELL;
     }
 
     TC_LOG_INFO("server.loading", ">> Loaded SpellInfo custom attributes in %u ms", GetMSTimeDiffToNow(oldMSTime));
@@ -2582,6 +2848,17 @@ void SpellMgr::LoadSpellInfoCorrections()
     {
         const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_0))->TargetA = SpellImplicitTargetInfo(TARGET_UNIT_CASTER);
         const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_0))->TargetB = SpellImplicitTargetInfo();
+    });
+
+    ApplySpellFix({
+        56690, // Thrust Spear
+        60586, // Mighty Spear Thrust
+        60776, // Claw Swipe
+        60881, // Fatal Strike
+        60864  // Jaws of Death
+        }, [](SpellInfo* spellInfo)
+    {
+        spellInfo->AttributesEx4 |= SPELL_ATTR4_FIXED_DAMAGE;
     });
 
     // Howl of Azgalor
@@ -3190,6 +3467,13 @@ void SpellMgr::LoadSpellInfoCorrections()
         spellInfo->Speed = 0.0f;    // This spell's summon happens instantly
     });
 
+    // Chilled to the Bone
+    ApplySpellFix({ 70106 }, [](SpellInfo* spellInfo)
+    {
+        spellInfo->AttributesEx3 |= SPELL_ATTR3_NO_DONE_BONUS;
+        spellInfo->AttributesEx6 |= SPELL_ATTR6_NO_DONE_PCT_DAMAGE_MODS;
+    });
+
     // Ice Lock
     ApplySpellFix({ 71614 }, [](SpellInfo* spellInfo)
     {
@@ -3213,6 +3497,12 @@ void SpellMgr::LoadSpellInfoCorrections()
     {
         const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_0))->RadiusEntry = sSpellRadiusStore.LookupEntry(EFFECT_RADIUS_200_YARDS); // 200yd
         const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_1))->RadiusEntry = sSpellRadiusStore.LookupEntry(EFFECT_RADIUS_200_YARDS); // 200yd
+    });
+
+    // Val'kyr Target Search
+    ApplySpellFix({ 69030 }, [](SpellInfo* spellInfo)
+    {
+         spellInfo->Attributes |= SPELL_ATTR0_UNAFFECTED_BY_INVULNERABILITY;
     });
 
     // Raging Spirit Visual
@@ -3260,14 +3550,16 @@ void SpellMgr::LoadSpellInfoCorrections()
     // Jump
     ApplySpellFix({ 71809 }, [](SpellInfo* spellInfo)
     {
-        spellInfo->RangeEntry = sSpellRangeStore.LookupEntry(3); // 20yd
-        const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_0))->RadiusEntry = sSpellRadiusStore.LookupEntry(EFFECT_RADIUS_25_YARDS); // 25yd
+        spellInfo->RangeEntry = sSpellRangeStore.LookupEntry(5); // 40yd
+        const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_0))->RadiusEntry = sSpellRadiusStore.LookupEntry(EFFECT_RADIUS_10_YARDS); // 10yd
+        const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_0))->MiscValue = 190;
     });
 
     // Broken Frostmourne
     ApplySpellFix({ 72405 }, [](SpellInfo* spellInfo)
     {
-        const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_1))->RadiusEntry = sSpellRadiusStore.LookupEntry(EFFECT_RADIUS_200_YARDS); // 200yd
+        const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_1))->RadiusEntry = sSpellRadiusStore.LookupEntry(EFFECT_RADIUS_20_YARDS); // 20yd
+        spellInfo->AttributesEx |= SPELL_ATTR1_NO_THREAT;
     });
     // ENDOF ICECROWN CITADEL SPELLS
 
@@ -3458,6 +3750,19 @@ void SpellMgr::LoadSpellInfoCorrections()
     });
     // ENDOF FIRELANDS SPELLS
 
+    //
+    // ANTORUS THE BURNING THRONE SPELLS
+    //
+
+    // Decimation
+    ApplySpellFix({ 244449 }, [](SpellInfo* spellInfo)
+    {
+        // For some reason there is a instakill effect that serves absolutely no purpose.
+        // Until we figure out what it's actually used for we disable it.
+        const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_2))->Effect = 0;
+    });
+
+    // ENDOF ANTORUS THE BURNING THRONE SPELLS
     // THE WANDERING ISLE SPELLS
     // Summon Pet
     ApplySpellFix({ 107924 }, [](SpellInfo* spellInfo)
@@ -3738,7 +4043,7 @@ void SpellMgr::LoadSpellInfoCorrections()
                 case SPELL_EFFECT_JUMP:
                 case SPELL_EFFECT_JUMP_DEST:
                 case SPELL_EFFECT_LEAP_BACK:
-                    if (!spellInfo->Speed && !spellInfo->SpellFamilyName)
+                    if (!spellInfo->Speed && !spellInfo->SpellFamilyName && !spellInfo->HasAttribute(SPELL_ATTR9_SPECIAL_DELAY_CALCULATION))
                         spellInfo->Speed = SPEED_CHARGE;
                     break;
             }
@@ -3747,6 +4052,14 @@ void SpellMgr::LoadSpellInfoCorrections()
                 if (G3D::fuzzyEq(spellInfo->ConeAngle, 0.f))
                     spellInfo->ConeAngle = 90.f;
         }
+
+        // disable proc for magnet auras, they're handled differently
+        if (spellInfo->HasAura(DIFFICULTY_NONE, SPELL_AURA_SPELL_MAGNET))
+            spellInfo->ProcFlags = 0;
+
+        // due to the way spell system works, unit would change orientation in Spell::_cast
+        if (spellInfo->HasAura(DIFFICULTY_NONE, SPELL_AURA_CONTROL_VEHICLE))
+            spellInfo->AttributesEx5 |= SPELL_ATTR5_DONT_TURN_DURING_CAST;
 
         if (spellInfo->ActiveIconFileDataId == 135754)  // flight
             spellInfo->Attributes |= SPELL_ATTR0_PASSIVE;

@@ -105,7 +105,7 @@ void WorldQuestMgr::LoadWorldQuestRewardTemplates()
 void WorldQuestMgr::LoadActiveWorldQuests()
 {
     // not asynch, only at startup
-    PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_WORLD_QUEST);
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_WORLD_QUEST);
     PreparedQueryResult result = CharacterDatabase.Query(stmt);
 
     if (!result)
@@ -202,7 +202,7 @@ void WorldQuestMgr::ActivateQuest(WorldQuestTemplate* worldQuestTemplate)
                         player->AddQuest(quest, nullptr);
     }
 
-    PreparedStatement* stmt = nullptr;
+    CharacterDatabasePreparedStatement* stmt = nullptr;
     stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_WORLD_QUEST);
     stmt->setUInt32(0, activeWorldQuest->QuestId);
     stmt->setUInt32(1, activeWorldQuest->RewardId);
@@ -239,7 +239,7 @@ void WorldQuestMgr::DisableQuest(ActiveWorldQuest* activeWorldQuest, bool delete
     for (auto criteria : GetCriteriasForQuest(quest->GetQuestId()))
         CharacterDatabase.PExecute("DELETE FROM character_achievement_progress WHERE criteria = %u", criteria->ID);
 
-    PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_WORLD_QUEST);
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_WORLD_QUEST);
     stmt->setUInt32(0, quest->GetQuestId());
     CharacterDatabase.Execute(stmt);
     CharacterDatabase.PExecute("DELETE FROM character_queststatus WHERE quest = %u", quest->GetQuestId());
@@ -449,7 +449,7 @@ std::vector<CriteriaEntry const*> WorldQuestMgr::GetCriteriasForQuest(uint32 que
     if (!quest)
         return gets;
 
-    CriteriaList criterias = sCriteriaMgr->GetPlayerCriteriaByType(CRITERIA_TYPE_COMPLETE_QUEST);
+    CriteriaList criterias = sCriteriaMgr->GetPlayerCriteriaByType(CRITERIA_TYPE_COMPLETE_QUEST, quest_id);
     for (Criteria const* criteria : criterias)
         if (criteria->Entry->Asset.QuestID == quest_id && criteria->Entry->Flags & 0x20) // guessed for World Quest related stuff
             gets.push_back(criteria->Entry);

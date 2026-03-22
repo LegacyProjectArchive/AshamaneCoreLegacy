@@ -18,7 +18,10 @@
 
 #include "AreaTrigger.h"
 #include "AreaTriggerAI.h"
+#include "Cell.h"
+#include "CellImpl.h"
 #include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "ScriptMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellHistory.h"
@@ -1949,7 +1952,7 @@ public:
         void HandleDummy(SpellEffIndex /*effIndex*/)
         {
             if (Unit* target = GetHitUnit())
-                target->RemoveMovementImpairingAuras();
+                target->RemoveMovementImpairingAuras(true);
         }
 
         void Register() override

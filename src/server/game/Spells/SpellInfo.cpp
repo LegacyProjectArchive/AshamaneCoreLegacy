@@ -75,6 +75,35 @@ bool SpellImplicitTargetInfo::IsArea() const
     return GetSelectionCategory() == TARGET_SELECT_CATEGORY_AREA || GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE || GetSelectionCategory() == TARGET_SELECT_CATEGORY_TRAJ;
 }
 
+bool SpellImplicitTargetInfo::IsProximityBasedAoe() const
+{
+    switch (_target)
+    {
+    case TARGET_UNIT_SRC_AREA_ENTRY:
+    case TARGET_UNIT_SRC_AREA_ENEMY:
+    case TARGET_UNIT_CASTER_AREA_PARTY:
+    case TARGET_UNIT_SRC_AREA_ALLY:
+    case TARGET_UNIT_SRC_AREA_PARTY:
+    case TARGET_UNIT_LASTTARGET_AREA_PARTY:
+    case TARGET_GAMEOBJECT_SRC_AREA:
+    case TARGET_UNIT_CASTER_AREA_RAID:
+    case TARGET_CORPSE_SRC_AREA_ENEMY:
+        return true;
+
+    case TARGET_UNIT_DEST_AREA_ENTRY:
+    case TARGET_UNIT_DEST_AREA_ENEMY:
+    case TARGET_UNIT_DEST_AREA_ALLY:
+    case TARGET_UNIT_DEST_AREA_PARTY:
+    case TARGET_GAMEOBJECT_DEST_AREA:
+    case TARGET_UNIT_TARGET_AREA_RAID_CLASS:
+        return false;
+
+    default:
+        TC_LOG_WARN("spells", "SpellImplicitTargetInfo::IsProximityBasedAoe called a non-aoe spell");
+        return false;
+    }
+}
+
 SpellTargetSelectionCategories SpellImplicitTargetInfo::GetSelectionCategory() const
 {
     return _data[_target].SelectionCategory;
@@ -450,8 +479,7 @@ bool SpellEffectInfo::IsFarUnitTargetEffect() const
 {
     return (Effect == SPELL_EFFECT_SUMMON_PLAYER)
         || (Effect == SPELL_EFFECT_SUMMON_RAF_FRIEND)
-        || (Effect == SPELL_EFFECT_RESURRECT)
-        || (Effect == SPELL_EFFECT_SKIN_PLAYER_CORPSE);
+        || (Effect == SPELL_EFFECT_RESURRECT);
 }
 
 bool SpellEffectInfo::IsFarDestTargetEffect() const
@@ -1325,6 +1353,30 @@ bool SpellInfo::CasterCanTurnDuringCast() const
     return true;
 }
 
+bool SpellInfo::HasTargetType(::Targets target) const
+{
+    for (auto itr = _effects.begin(); itr != _effects.end(); ++itr)
+    {
+        for (SpellEffectInfo const* effect : itr->second)
+        {
+            if (effect && (effect->TargetA.GetTarget() == target || effect->TargetB.GetTarget() == target))
+                return true;
+        }
+    }
+    return false;
+}
+
+bool SpellInfo::HasTargetType(uint32 difficulty, ::Targets target) const
+{
+    SpellEffectInfoVector effects = GetEffectsForDifficulty(difficulty);
+    for (SpellEffectInfo const* effect : effects)
+    {
+        if (effect && (effect->TargetA.GetTarget() == target || effect->TargetB.GetTarget() == target))
+            return true;
+    }
+    return false;
+}
+
 bool SpellInfo::HasAnyAuraInterruptFlag() const
 {
     return std::find_if(AuraInterruptFlags.begin(), AuraInterruptFlags.end(), [](uint32 flag) { return flag != 0; }) != AuraInterruptFlags.end();
@@ -1606,7 +1658,7 @@ bool SpellInfo::IsChanneled() const
 
 bool SpellInfo::IsMoveAllowedChannel() const
 {
-    return IsChanneled() && HasAttribute(SPELL_ATTR5_CAN_CHANNEL_WHEN_MOVING);
+    return IsChanneled() && (HasAttribute(SPELL_ATTR5_CAN_CHANNEL_WHEN_MOVING) || (!(ChannelInterruptFlags[0] & (AURA_INTERRUPT_FLAG_MOVE | AURA_INTERRUPT_FLAG_TURNING))));
 }
 
 bool SpellInfo::NeedsComboPoints() const
@@ -1627,7 +1679,8 @@ bool SpellInfo::IsBreakingStealth() const
 bool SpellInfo::IsRangedWeaponSpell() const
 {
     return (SpellFamilyName == SPELLFAMILY_HUNTER && !(SpellFamilyFlags[1] & 0x10000000)) // for 53352, cannot find better way
-        || (EquippedItemSubClassMask > 0 && EquippedItemSubClassMask & ITEM_SUBCLASS_MASK_WEAPON_RANGED);
+        || (EquippedItemSubClassMask & ITEM_SUBCLASS_MASK_WEAPON_RANGED)
+        || (Attributes & SPELL_ATTR0_REQ_AMMO);
 }
 
 bool SpellInfo::IsAutoRepeatRangedSpell() const
@@ -1638,6 +1691,11 @@ bool SpellInfo::IsAutoRepeatRangedSpell() const
 bool SpellInfo::HasInitialAggro() const
 {
     return !(HasAttribute(SPELL_ATTR1_NO_THREAT) || HasAttribute(SPELL_ATTR3_NO_INITIAL_AGGRO));
+}
+
+bool SpellInfo::HasHitDelay() const
+{
+    return Speed > 0.0f || LaunchDelay > 0.0f;
 }
 
 WeaponAttackType SpellInfo::GetAttackType() const
@@ -3302,11 +3360,14 @@ void SpellInfo::_LoadImmunityInfo()
             {
                 switch (Id)
                 {
+                    case 42292: // PvP trinket
+                    case 59752: // Every Man for Himself
+                        mechanicImmunityMask |= IMMUNE_TO_MOVEMENT_IMPAIRMENT_AND_LOSS_CONTROL_MASK;
+                        immuneInfo.AuraTypeImmune.insert(SPELL_AURA_USE_NORMAL_MOVEMENT_SPEED);
+                        break;
                     case 34471: // The Beast Within
                     case 19574: // Bestial Wrath
-                    case 42292: // PvP trinket
                     case 46227: // Medallion of Immunity
-                    case 59752: // Every Man for Himself
                     case 53490: // Bullheaded
                     case 65547: // PvP Trinket
                     case 134946: // Supremacy of the Alliance
@@ -3439,7 +3500,13 @@ void SpellInfo::ApplyAllSpellImmunitiesTo(Unit* target, SpellEffectInfo const* e
                 target->ApplySpellImmune(Id, IMMUNITY_MECHANIC, i, apply);
 
         if (apply && HasAttribute(SPELL_ATTR1_DISPEL_AURAS_ON_IMMUNITY))
-            target->RemoveAurasWithMechanic(mechanicImmunity, AURA_REMOVE_BY_DEFAULT, Id);
+        {
+            // exception for purely snare mechanic (eg. hands of freedom)!
+            if (mechanicImmunity == (1 << MECHANIC_SNARE))
+                target->RemoveMovementImpairingAuras(false);
+            else
+                target->RemoveAurasWithMechanic(mechanicImmunity, AURA_REMOVE_BY_DEFAULT, Id);
+        }
     }
 
     if (uint32 dispelImmunity = immuneInfo->DispelImmune)
@@ -3733,10 +3800,10 @@ uint32 SpellInfo::GetRecoveryTime() const
     return RecoveryTime > CategoryRecoveryTime ? RecoveryTime : CategoryRecoveryTime;
 }
 
-std::vector<SpellPowerCost> SpellInfo::CalcPowerCost(Unit const* caster, SpellSchoolMask schoolMask) const
+std::vector<SpellPowerCost> SpellInfo::CalcPowerCost(Unit const* caster, SpellSchoolMask schoolMask, Spell* spell) const
 {
     std::vector<SpellPowerCost> costs;
-    auto collector = [this, caster, schoolMask, &costs](std::vector<SpellPowerEntry const*> const& powers)
+    auto collector = [this, caster, schoolMask, spell, &costs](std::vector<SpellPowerEntry const*> const& powers)
     {
         costs.reserve(powers.size());
         int32 healthCost = 0;
@@ -3852,9 +3919,9 @@ std::vector<SpellPowerCost> SpellInfo::CalcPowerCost(Unit const* caster, SpellSc
             if (Player* modOwner = caster->GetSpellModOwner())
             {
                 if (power->OrderIndex == 0)
-                    modOwner->ApplySpellMod(Id, SPELLMOD_COST, powerCost);
+                    modOwner->ApplySpellMod(Id, SPELLMOD_COST, powerCost, spell);
                 else if (power->OrderIndex == 1)
-                    modOwner->ApplySpellMod(Id, SPELLMOD_SPELL_COST2, powerCost);
+                    modOwner->ApplySpellMod(Id, SPELLMOD_SPELL_COST2, powerCost, spell);
             }
 
             if (!caster->IsControlledByPlayer() && G3D::fuzzyEq(power->PowerCostPct, 0.0f) && SpellLevel)
@@ -4421,6 +4488,7 @@ bool SpellInfo::_IsPositiveEffect(uint32 effIndex, bool deep) const
                 case SPELL_AURA_MOD_STALKED:
                 case SPELL_AURA_PERIODIC_DAMAGE_PERCENT:
                 case SPELL_AURA_PREVENT_RESURRECTION:
+                case SPELL_AURA_EMPATHY:
                     return false;
                 case SPELL_AURA_PERIODIC_DAMAGE:            // used in positive spells also.
                     // part of negative spell if cast at self (prevent cancel)

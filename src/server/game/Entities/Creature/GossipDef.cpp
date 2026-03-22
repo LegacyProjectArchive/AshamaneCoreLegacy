@@ -26,6 +26,8 @@
 #include "Player.h"
 #include "QuestDef.h"
 #include "QuestPackets.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "World.h"
 #include "WorldSession.h"
 
@@ -445,8 +447,20 @@ void PlayerMenu::SendQuestGiverQuestDetails(Quest const* quest, ObjectGuid npcGU
     packet.QuestFlags[1] = quest->GetFlagsEx();
     packet.SuggestedPartyMembers = quest->GetSuggestedPlayers();
 
-    if (quest->GetSrcSpell())
-        packet.LearnSpells.push_back(quest->GetSrcSpell());
+    // RewardSpell can teach multiple spells in trigger spell effects. But not all effects must be SPELL_EFFECT_LEARN_SPELL. See example spell 33950
+    if (quest->GetRewSpell())
+    {
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(quest->GetRewSpell());
+        if (spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+        {
+            SpellEffectInfoVector effects = spellInfo->GetEffectsForDifficulty(DIFFICULTY_NONE);
+            for (SpellEffectInfoVector::const_iterator itr = effects.begin(); itr != effects.end(); ++itr)
+            {
+                if ((*itr)->IsEffect(SPELL_EFFECT_LEARN_SPELL))
+                    packet.LearnSpells.push_back((*itr)->TriggerSpell);
+            }
+        }
+    }
 
     quest->BuildQuestRewards(packet.Rewards, _session->GetPlayer());
 
@@ -523,7 +537,7 @@ void PlayerMenu::SendQuestQueryResponse(Quest const* quest) const
     packet.Info.RewardXPMultiplier = quest->GetXPMultiplier();
 
     if (!quest->HasFlag(QUEST_FLAGS_HIDDEN_REWARDS))
-        packet.Info.RewardMoney = quest->RewardMoney < 0 ? quest->RewardMoney : _session->GetPlayer()->GetQuestMoneyReward(quest);
+        packet.Info.RewardMoney = quest->_rewardMoney < 0 ? quest->_rewardMoney : _session->GetPlayer()->GetQuestMoneyReward(quest);
 
     packet.Info.RewardMoneyDifficulty = quest->GetRewMoneyDifficulty();
     packet.Info.RewardMoneyMultiplier = quest->GetMoneyMultiplier();
@@ -711,13 +725,13 @@ void PlayerMenu::SendQuestGiverRequestItems(Quest const* quest, ObjectGuid npcGU
 
     if (canComplete)
     {
-        packet.CompEmoteDelay = quest->EmoteOnCompleteDelay;
-        packet.CompEmoteType = quest->EmoteOnComplete;
+        packet.CompEmoteDelay = quest->GetCompleteEmoteDelay();
+        packet.CompEmoteType = quest->GetCompleteEmote();
     }
     else
     {
-        packet.CompEmoteDelay = quest->EmoteOnIncompleteDelay;
-        packet.CompEmoteType = quest->EmoteOnIncomplete;
+        packet.CompEmoteDelay = quest->GetIncompleteEmoteDelay();
+        packet.CompEmoteType = quest->GetIncompleteEmote();
     }
 
     packet.QuestFlags[0] = quest->GetFlags();

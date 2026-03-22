@@ -83,7 +83,7 @@ bool Garrison::LoadFromDB()
 {
     ObjectGuid::LowType lowGuid = _owner->GetGUID().GetCounter();
 
-    PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_GARRISON);
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_GARRISON);
     stmt->setUInt64(0, lowGuid);
     stmt->setUInt8(1, _garrisonType);
     PreparedQueryResult garrisonStmt = CharacterDatabase.Query(stmt);
@@ -237,11 +237,11 @@ bool Garrison::LoadFromDB()
     return true;
 }
 
-void Garrison::SaveToDB(SQLTransaction& trans)
+void Garrison::SaveToDB(CharacterDatabaseTransaction trans)
 {
-    DeleteFromDB(trans);
+    DeleteFromDB(_owner->GetGUID().GetCounter(), trans);
 
-    PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHARACTER_GARRISON);
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHARACTER_GARRISON);
     stmt->setUInt64(0, _owner->GetGUID().GetCounter());
     stmt->setUInt8(1, _garrisonType);
     stmt->setUInt32(2, _siteLevel->ID);
@@ -312,14 +312,14 @@ void Garrison::SaveToDB(SQLTransaction& trans)
     }
 }
 
-void Garrison::DeleteFromDB(SQLTransaction& trans)
+void Garrison::DeleteFromDB(ObjectGuid::LowType guid, CharacterDatabaseTransaction trans)
 {
     DeleteFromDB(trans, _owner->GetGUID().GetCounter(), GetType());
 }
 
-void Garrison::DeleteFromDB(SQLTransaction& trans, ObjectGuid::LowType guid, GarrisonType garrType)
+void Garrison::DeleteFromDB(CharacterDatabaseTransaction trans, ObjectGuid::LowType guid,  GarrisonType garrType)
 {
-    PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHARACTER_GARRISON);
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHARACTER_GARRISON);
     stmt->setUInt64(0, guid);
     stmt->setUInt8(1, garrType);
     trans->Append(stmt);
@@ -415,7 +415,7 @@ void Garrison::AddFollower(uint32 garrFollowerId)
 
     _owner->UpdateCriteria(CRITERIA_TYPE_RECRUIT_GARRISON_FOLLOWER, follower.PacketInfo.DbID);
 
-    SQLTransaction trans = CharacterDatabase.BeginTransaction();
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     SaveToDB(trans);
     CharacterDatabase.CommitTransaction(trans);
 }
@@ -631,7 +631,7 @@ void Garrison::GenerateMissions()
         availableMissionWithWeights.second.erase(weightItr);
     }
 
-    SQLTransaction trans = CharacterDatabase.BeginTransaction();
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     SaveToDB(trans);
     CharacterDatabase.CommitTransaction(trans);
 }
@@ -748,13 +748,15 @@ void Garrison::CalculateMissonBonusRoll(uint32 garrMissionId)
 
 void Garrison::RewardMission(Mission* mission, bool withOvermaxReward)
 {
-    auto rewardLists = { mission->Rewards };
-    if (withOvermaxReward)
-        rewardLists = { mission->Rewards, mission->BonusRewards };
+    std::vector<std::vector<WorldPackets::Garrison::GarrisonMissionReward> const*> rewardLists;
+    rewardLists.push_back(&mission->Rewards);
 
-    for (auto rewards : rewardLists)
+    if (withOvermaxReward)
+        rewardLists.push_back(&mission->BonusRewards);
+
+    for (auto const* rewards : rewardLists)
     {
-        for (WorldPackets::Garrison::GarrisonMissionReward reward : rewards)
+        for (auto const& reward : *rewards)
         {
             if (reward.ItemID)
                 GetOwner()->AddItem(reward.ItemID, reward.ItemQuantity);
@@ -768,12 +770,6 @@ void Garrison::RewardMission(Mission* mission, bool withOvermaxReward)
                 for (Follower* follower : followers)
                     follower->EarnXP(GetOwner(), reward.FollowerXP);
             }
-
-            //if (reward.BonusAbilityID)
-                // TODO
-
-            //if (reward.Unknown)
-                // TODO
         }
     }
 }

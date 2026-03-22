@@ -82,9 +82,9 @@ public:
 
     static void DeleteFromDB(ObjectGuid const& guid);
     void LoadFromDB(PreparedQueryResult achievementResult, PreparedQueryResult criteriaResult);
-    void SaveToDB(SQLTransaction& trans);
+    void SaveToDB(CharacterDatabaseTransaction& trans);
 
-    void ResetCriteria(CriteriaTypes type, uint64 miscValue1 = 0, uint64 miscValue2 = 0, bool evenIfCriteriaComplete = false);
+    void ResetCriteria(CriteriaCondition condition, int32 failAsset, bool evenIfCriteriaComplete = false);
     void ResetCriteriaId(CriteriaTypes type, uint32 id);
 
     void SendAllData(Player const* receiver) const override;
@@ -103,7 +103,7 @@ protected:
     void SendPacket(WorldPacket const* data) const override;
 
     std::string GetOwnerInfo() const override;
-    CriteriaList const& GetCriteriaByType(CriteriaTypes type) const override;
+    CriteriaList const& GetCriteriaByType(CriteriaTypes type, uint32 asset) const override;
 
 private:
     Player* _owner;
@@ -118,7 +118,7 @@ public:
 
     static void DeleteFromDB(ObjectGuid const& guid);
     void LoadFromDB(PreparedQueryResult achievementResult, PreparedQueryResult criteriaResult);
-    void SaveToDB(SQLTransaction& trans);
+    void SaveToDB(CharacterDatabaseTransaction& trans);
 
     void SendAllData(Player const* receiver) const override;
     void SendAchievementInfo(Player* receiver, uint32 achievementId = 0) const;
@@ -136,7 +136,7 @@ protected:
     void SendPacket(WorldPacket const* data) const override;
 
     std::string GetOwnerInfo() const override;
-    CriteriaList const& GetCriteriaByType(CriteriaTypes type) const override;
+    CriteriaList const& GetCriteriaByType(CriteriaTypes type, uint32 asset) const override;
 
 private:
     Guild* _owner;

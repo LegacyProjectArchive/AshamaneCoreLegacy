@@ -26,6 +26,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 
 #define OUT_SAVE_INST_DATA             TC_LOG_DEBUG("scripts", "Saving Instance Data for Instance %s (Map %d, Instance Id %d)", instance->GetMapName(), instance->GetId(), instance->GetInstanceId())
 #define OUT_SAVE_INST_DATA_COMPLETE    TC_LOG_DEBUG("scripts", "Saving Instance Data for Instance %s (Map %d, Instance Id %d) completed.", instance->GetMapName(), instance->GetId(), instance->GetInstanceId())
@@ -138,7 +139,7 @@ struct ObjectData
     uint32 type;
 };
 
-typedef std::set<AreaBoundary const*> CreatureBoundary;
+typedef std::vector<AreaBoundary const*> CreatureBoundary;
 
 struct BossInfo
 {
